@@ -1,0 +1,12 @@
+.next
+out
+build
+coverage
+playwright-report
+blob-report
+test-results
+node_modules
+package-lock.json
+next-env.d.ts
+# The specification is maintained by hand; keep its formatting as authored.
+PROJECT.md
