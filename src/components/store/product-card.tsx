@@ -31,12 +31,14 @@ export type ProductCardData = Readonly<{
   badges?: readonly ProductCardBadge[];
   /** Dims the image for products that cannot be bought right now. */
   unavailable?: boolean;
+  /** Small secondary line under the price, e.g. a release date. */
+  note?: string | null;
 }>;
 
 /**
  * Product tile (visual shell). Purely presentational: it never decides stock
- * or purchasability itself. Catalog code (Milestone 4) derives badges and
- * `unavailable` from server-side data.
+ * or purchasability itself. `toProductCardData` derives badges, notes and
+ * `unavailable` from server-side catalog data.
  *
  * The whole card is one link, so the tap target is large on mobile; the name
  * is the link text, which keeps screen reader output short.
@@ -107,6 +109,11 @@ export function ProductCard({
           compareAtAmount={product.compareAtPriceAmount}
           className="mt-auto pt-1 text-sm sm:text-base"
         />
+        {product.note && (
+          <p className="text-xs text-muted-foreground sm:text-sm">
+            {product.note}
+          </p>
+        )}
       </div>
     </article>
   );

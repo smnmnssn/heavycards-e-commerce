@@ -196,9 +196,9 @@ the route map in [routes.md](routes.md). This section records the decisions.
 
 - The navigation links to `/nyheter`, `/pokemon-tcg`, `/kommande` and `/sok`,
   which Milestone 4 implements. Until then they return the Swedish 404 page.
-- Next.js viewport prefetching logs 404s for them. `e2e/pending-routes.ts` is
-  the explicit, temporary allowlist the smoke test tolerates; Milestone 4 must
-  empty it.
+- Next.js viewport prefetching logged 404s for them, so `e2e/pending-routes.ts`
+  was a temporary allowlist. Milestone 4 built the routes and deleted the file;
+  the smoke test now tolerates no failed requests at all.
 - Information and legal routes exist as `noindex` placeholders pending the
   owner's content and legal review.
 
@@ -215,3 +215,96 @@ the route map in [routes.md](routes.md). This section records the decisions.
   stored as `NULL`. An empty-string pseudo-ID is impossible, because
   PostgreSQL cannot store `''` in a `uuid` column.
 - No schema change was needed. A DB test now asserts both properties.
+
+## Milestone 4 — Catalog (2026-10-01)
+
+Routes are listed in [routes.md](routes.md). Storefront rules are in
+`src/server/domain/catalog.ts`.
+
+### Query architecture
+
+- `src/server/data/catalog-queries.ts` is the only catalog data access. Its
+  functions take the Prisma client explicitly, so DB tests run the exact
+  production queries against the test database.
+- **Listings** (all product grids, search, homepage sections, related
+  products) use **one parameterized SQL query** (`listProducts`). It
+  computes `available = stock_on_hand − active unexpired reservations` in a
+  lateral join, so the "in stock" filter, sorting and paging all agree with
+  the badges. The same query:
+  - picks the first image in another lateral join;
+  - returns the total with `count(*) OVER ()`.
+
+  A page therefore costs a single round trip.
+
+- User input reaches SQL only as bound parameters; `ORDER BY` fragments come
+  from a fixed whitelist.
+- **Product pages** use Prisma (product with category, set and images), then
+  three queries in parallel: active reservations, the newest 20 approved
+  reviews, and the approved-review aggregate.
+- Lookups needed by both `generateMetadata` and the page are deduplicated
+  with React `cache`.
+- DB tests assert that the SQL visibility and availability rules equal the
+  domain functions (`isListable`, `availableToSell`) for every seeded
+  product.
+- Listings are bounded: 24 per page, offset pagination. Out-of-range pages
+  return 404.
+
+### Rendering and caching (PROJECT.md §59, §92)
+
+| Pages                                                                    | Strategy                                                                              |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| Homepage, information pages                                              | ISR, `revalidate = 60`                                                                |
+| Product pages                                                            | ISR, `revalidate = 60`, rendered on first visit (`generateStaticParams` returns `[]`) |
+| `/pokemon-tcg`, `/kategori/*`, `/set/*`, `/nyheter`, `/kommande`, `/sok` | Dynamic, since they read `searchParams`                                               |
+
+- Displayed stock and price can therefore be at most 60 seconds old on cached
+  pages. That is acceptable because checkout re-validates everything
+  server-side (Milestone 8).
+- Admin changes (Milestone 7) and payments (Milestone 9) should call
+  `revalidatePath` for affected product, category and homepage paths.
+- Cache Components (`cacheComponents`) is **not** enabled; this uses the
+  established ISR model.
+- **Consequence:** `next build` prerenders the homepage and information pages
+  from the database, so builds need a reachable `DATABASE_URL`. CI and Vercel
+  builds have one.
+
+### Real 404s vs streaming
+
+- A `loading.tsx` boundary starts streaming with status 200 before the page
+  can call `notFound()`; Next.js then only adds `noindex`, a "soft 404".
+- Product, category and set routes therefore have **no** loading boundary, so
+  unknown slugs return a real 404.
+- `/nyheter`, `/kommande` and `/sok` keep loading skeletons. Their only
+  `notFound()` case is an out-of-range page number, which is `noindex` anyway.
+
+### Server vs client
+
+The only new client component is `ProductGalleryInteractive`, rendered only
+when a product has two or more images. Everything else stays on the server:
+listings, filters (plain GET forms), pagination (links), search, reviews and
+the purchase panel.
+
+### Search
+
+- Search matches all terms (AND) with `LIKE` against name, short description,
+  SKU, category name and set name. Terms are at least 2 characters, at most 5
+  terms, and `%`/`_` are escaped.
+- Accented e is folded, so "pokemon" finds "Pokémon"; å, ä and ö are kept.
+- Relevance order: products whose _name_ matches all terms come first, then
+  newest.
+- This is enough for the V1 catalog and needs no extension or separate
+  service. To upgrade later, replace the SQL behind `listProducts` (e.g.
+  `pg_trgm` or full-text search) without touching pages.
+
+### Store settings in the footer
+
+- The footer reads contact email, company name and organisationsnummer from
+  `StoreSettings` via `getPublicStoreInfo()`.
+- Missing settings or fields are omitted; with no settings row at all, the
+  low-stock threshold falls back to 0 (no "few left" labels).
+- The seed's contact email is an `example.com` placeholder, and the seed sets
+  no company name or number.
+
+### Dependencies
+
+None added.

@@ -3,13 +3,16 @@ import Link from "next/link";
 import { Container } from "@/components/ui/container";
 import { footerNavigation } from "@/lib/config/navigation";
 import { siteConfig } from "@/lib/config/site";
+import { getPublicStoreInfo } from "@/server/data/store-settings";
 
 /**
  * Storefront footer on the inverted (black) brand surface. Company details
- * such as organisationsnummer come from store settings in a later milestone.
+ * come from store settings; optional fields are simply omitted when unset.
  */
-export function SiteFooter() {
+export async function SiteFooter() {
   const year = new Date().getFullYear();
+  const { contactEmail, companyName, organizationNumber } =
+    await getPublicStoreInfo();
 
   return (
     <footer className="surface-inverted mt-auto">
@@ -23,6 +26,17 @@ export function SiteFooter() {
               Förseglade Pokémon TCG-produkter för samlare och spelare i
               Sverige.
             </p>
+            {contactEmail && (
+              <p className="mt-4 text-sm">
+                <span className="text-muted-foreground">Kundservice: </span>
+                <a
+                  href={`mailto:${contactEmail}`}
+                  className="underline underline-offset-4"
+                >
+                  {contactEmail}
+                </a>
+              </p>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-x-6 gap-y-10 sm:grid-cols-3">
@@ -50,7 +64,8 @@ export function SiteFooter() {
 
         <div className="mt-16 flex flex-col gap-4 border-t border-border pt-8 text-xs leading-relaxed text-muted-foreground sm:flex-row sm:justify-between">
           <p>
-            © {year} {siteConfig.brandName}
+            © {year} {companyName ?? siteConfig.brandName}
+            {organizationNumber && <> · Org.nr {organizationNumber}</>}
           </p>
           <p className="max-w-xl sm:text-right">
             {siteConfig.brandName} är en oberoende återförsäljare och är inte

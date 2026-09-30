@@ -89,19 +89,42 @@ export async function seedDatabase(
 
       // --- Categories ------------------------------------------------------
       const categoryRows = [
-        ["booster-boxes", "Booster Boxes"],
-        ["elite-trainer-boxes", "Elite Trainer Boxes"],
-        ["booster-packs", "Booster Packs"],
-        ["collection-boxes", "Collection Boxes"],
-        ["tins", "Tins"],
-        ["tillbehor", "Tillbehör"],
+        [
+          "booster-boxes",
+          "Booster Boxes",
+          "Hela displayer med booster packs från ett set, för dig som vill öppna mycket eller samla på förseglade boxar.",
+        ],
+        [
+          "elite-trainer-boxes",
+          "Elite Trainer Boxes",
+          "Elite Trainer Boxes med booster packs, sleeves, tärningar och tillbehör för spel och samling.",
+        ],
+        [
+          "booster-packs",
+          "Booster Packs",
+          "Enskilda booster packs och bundles från aktuella och tidigare set.",
+        ],
+        [
+          "collection-boxes",
+          "Collection Boxes",
+          "Kollektioner med promokort, booster packs och extra innehåll.",
+        ],
+        ["tins", "Tins", "Tins och mini tins med booster packs."],
+        [
+          "tillbehor",
+          "Tillbehör",
+          "Tillbehör för att skydda och förvara dina kort.",
+        ],
       ] as const;
       const categories: Record<string, string> = {};
-      for (const [sortOrder, [slug, name]] of categoryRows.entries()) {
+      for (const [
+        sortOrder,
+        [slug, name, description],
+      ] of categoryRows.entries()) {
         const category = await tx.category.upsert({
           where: { slug },
-          create: { slug, name, sortOrder },
-          update: { name, sortOrder },
+          create: { slug, name, description, sortOrder },
+          update: { name, description, sortOrder },
         });
         categories[slug] = category.id;
       }
@@ -127,10 +150,11 @@ export async function seedDatabase(
       ];
       const sets: Record<string, string> = {};
       for (const [slug, name, releaseDate] of setRows) {
+        const description = `Förseglade produkter från ${name}.`;
         const set = await tx.pokemonSet.upsert({
           where: { slug },
-          create: { slug, name, releaseDate },
-          update: { name, releaseDate },
+          create: { slug, name, releaseDate, description },
+          update: { name, releaseDate, description },
         });
         sets[slug] = set.id;
       }
@@ -141,6 +165,7 @@ export async function seedDatabase(
         slug: string;
         name: string;
         shortDescription: string;
+        description?: string;
         productType?: ProductType;
         category: string;
         set: string | null;
@@ -159,7 +184,11 @@ export async function seedDatabase(
           sku: "SV10-BB-EN",
           slug: "destined-rivals-booster-box",
           name: "Destined Rivals Booster Box",
-          shortDescription: "36 booster packs från Destined Rivals.",
+          shortDescription:
+            "Booster box med 36 booster packs från Destined Rivals.",
+          description:
+            "En förseglad booster box från Destined Rivals med 36 booster packs.\n\n" +
+            "Boxen levereras i originalförpackning med oskadad plastfilm. Passar både för dig som vill öppna och för dig som samlar på förseglade produkter.",
           category: "booster-boxes",
           set: "destined-rivals",
           priceAmount: 219_900,
@@ -173,7 +202,7 @@ export async function seedDatabase(
           slug: "destined-rivals-elite-trainer-box",
           name: "Destined Rivals Elite Trainer Box",
           shortDescription:
-            "9 booster packs, tärningar, sleeves och tillbehör. Få kvar i lager.",
+            "Elite Trainer Box med 9 booster packs, sleeves, tärningar och tillbehör.",
           category: "elite-trainer-boxes",
           set: "destined-rivals",
           priceAmount: 69_900,
@@ -198,7 +227,7 @@ export async function seedDatabase(
           slug: "journey-together-booster-box",
           name: "Journey Together Booster Box",
           shortDescription:
-            "36 booster packs från Journey Together. Nedsatt pris.",
+            "Booster box med 36 booster packs från Journey Together.",
           category: "booster-boxes",
           set: "journey-together",
           priceAmount: 199_900,
@@ -212,8 +241,7 @@ export async function seedDatabase(
           sku: "SV8PT5-ETB-EN",
           slug: "prismatic-evolutions-elite-trainer-box",
           name: "Prismatic Evolutions Elite Trainer Box",
-          shortDescription:
-            "Slutsåld – exempel på en aktiv produkt utan lager.",
+          shortDescription: "Elite Trainer Box från Prismatic Evolutions.",
           category: "elite-trainer-boxes",
           set: "prismatic-evolutions",
           priceAmount: 99_900,
@@ -265,7 +293,7 @@ export async function seedDatabase(
           slug: "kommande-set-booster-box",
           name: "Kommande set Booster Box",
           shortDescription:
-            "Kommer snart – exempel på COMING_SOON utan förbeställning.",
+            "Booster box från ett kommande set. Går inte att beställa ännu.",
           category: "booster-boxes",
           set: "kommande-set",
           priceAmount: 229_900,
@@ -279,7 +307,7 @@ export async function seedDatabase(
           slug: "kommande-set-elite-trainer-box",
           name: "Kommande set Elite Trainer Box",
           shortDescription:
-            "Förbeställ – exempel på förbeställning med tilldelat lager.",
+            "Elite Trainer Box från ett kommande set. Kan förbeställas.",
           category: "elite-trainer-boxes",
           set: "kommande-set",
           priceAmount: 74_900,
@@ -293,7 +321,7 @@ export async function seedDatabase(
           sku: "ME01-BB-EN",
           slug: "mega-evolution-booster-box",
           name: "Mega Evolution Booster Box",
-          shortDescription: "Utkast – syns inte i butiken.",
+          shortDescription: "Booster box från Mega Evolution.",
           category: "booster-boxes",
           set: "mega-evolution",
           priceAmount: 219_900,
@@ -305,7 +333,7 @@ export async function seedDatabase(
           sku: "SV3PT5-BNDL-EN",
           slug: "scarlet-violet-151-booster-bundle",
           name: "Scarlet & Violet—151 Booster Bundle",
-          shortDescription: "Arkiverad – finns kvar för orderhistorik.",
+          shortDescription: "Booster bundle från Scarlet & Violet—151.",
           category: "booster-packs",
           set: "scarlet-violet-151",
           priceAmount: 49_900,
@@ -324,6 +352,7 @@ export async function seedDatabase(
           slug: row.slug,
           name: row.name,
           shortDescription: row.shortDescription,
+          description: row.description ?? null,
           productType: row.productType ?? "SEALED",
           categoryId: categories[row.category]!,
           pokemonSetId: row.set ? sets[row.set]! : null,

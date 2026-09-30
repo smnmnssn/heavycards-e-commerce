@@ -202,3 +202,30 @@ client JavaScript.
 - To install the real asset, place it at `public/brand/heavycards-logo.svg`
   (or a high-resolution PNG/WebP) and set `brandAssets.logo` in
   `src/lib/config/brand.ts` with its intrinsic width and height.
+
+## Catalog components (Milestone 4)
+
+| Component                                           | Notes                                                                                                                             |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `ProductListing`                                    | Grid, pagination and empty state. The first four cards get image priority (LCP).                                                  |
+| `CatalogToolbar`                                    | GET form with labelled selects (category, set, availability, sort) and a "Visa" button. Nothing navigates on change (WCAG 3.2.2). |
+| `Pagination`                                        | Previous/next links with `rel`, plus "Sida X av Y".                                                                               |
+| `EmptyState`                                        | Calm bordered message with an optional action.                                                                                    |
+| `CategoryTiles`, `SetList`                          | Taxonomy navigation with product counts; empty categories and sets are hidden.                                                    |
+| `ProductGallery`                                    | Fixed square frame (no layout shift). Server-rendered for 0–1 images; a client thumbnail gallery only for 2+ images.              |
+| `ProductImagePlaceholder`                           | Neutral grey square with the text wordmark, used while products have no photos. Decorative (`aria-hidden`).                       |
+| `PurchasePanel`, `AvailabilityStatus`               | Availability (filled dot = available, ring = not), release date and preorder terms. The purchase control is a slot (`action`).    |
+| `PurchaseActionPlaceholder`                         | Disabled "Lägg i kundvagn"/"Förbeställ" with the reason "Köp i webbutiken öppnar snart." Milestone 5 replaces it.                 |
+| `StarRating`, `ProductReviews`, `ReviewSummaryLink` | Monochrome stars filled to the exact average; the accessible text states the rating in words. Approved reviews only.              |
+| `ListingSkeleton`                                   | Loading state for `/nyheter`, `/kommande` and `/sok`.                                                                             |
+
+**Product card badges:**
+
+- Slutsåld (muted)
+- Förbeställ (solid)
+- Kommer snart (outline)
+- Få kvar (outline)
+- Nyhet (outline): only for products in stock that were published within 30 days
+
+Cards show at most two badges. Unavailable products have dimmed images, and
+future releases get a "Släpps 14 november 2026" note under the price.

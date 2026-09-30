@@ -17,8 +17,9 @@ server-side logic. Market: Sweden only, Swedish UI, SEK.
 | 1 — Repository foundation | Done  |
 | 2 — Database foundation   | Done  |
 | 3 — Storefront design     | Done  |
-| 4 — Catalog               | Next  |
-| 5–15                      | —     |
+| 4 — Catalog               | Done  |
+| 5 — Cart                  | Next  |
+| 6–15                      | —     |
 
 Sections below marked _(later milestone)_ are placeholders and are filled in as
 those features land.
@@ -138,7 +139,7 @@ src/
   app/            routes: (store)/ public storefront, api/ route handlers, admin/ (later)
   components/     store/, admin/, ui/ (shadcn/ui components)
   lib/            framework-level modules: env, config, auth, db, stripe, email, storage, seo, validation
-  server/         domain/ rules, services/ use cases, data/ Prisma queries (server-only)
+  server/         domain/ rules, catalog/ presenters, data/ database queries (server-only)
   types/          shared TypeScript types
   generated/      Prisma client (generated, git-ignored)
   instrumentation.ts

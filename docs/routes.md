@@ -7,22 +7,71 @@ since published URLs need permanent redirects once live.
 
 ## Storefront
 
-| Route                        | Page                                    | Milestone           | Indexable      |
-| ---------------------------- | --------------------------------------- | ------------------- | -------------- |
-| `/`                          | Homepage                                | 3 (shell), 4 (data) | yes            |
-| `/nyheter`                   | New arrivals (recently published)       | 4                   | yes            |
-| `/pokemon-tcg`               | All Pokémon TCG products (main listing) | 4                   | yes            |
-| `/pokemon-tcg/[productSlug]` | Product page                            | 4                   | yes            |
-| `/kommande`                  | Upcoming releases and preorders         | 4                   | yes            |
-| `/kategori/[slug]`           | Category landing page                   | 4                   | yes            |
-| `/set/[slug]`                | Pokémon set landing page                | 4                   | yes            |
-| `/sok?q=…`                   | Search results                          | 4                   | no (`noindex`) |
-| `/review/[token]`            | Secure review page                      | 11                  | no             |
+All storefront routes below exist as of Milestone 4 (except `/review/[token]`).
 
-**Filtered and sorted variants.** Query parameters on listing pages (e.g.
-`?sortering=pris-stigande`) render with a canonical URL pointing at the
-unfiltered page, so search engines do not index thousands of variants
-(PROJECT.md §65). Details are decided in Milestone 4.
+| Route                        | Page                                            | Rendering | Indexable                |
+| ---------------------------- | ----------------------------------------------- | --------- | ------------------------ |
+| `/`                          | Homepage with database-backed sections          | ISR 60 s  | yes                      |
+| `/pokemon-tcg`               | Landing page: categories, sets, full listing    | dynamic   | yes (unfiltered)         |
+| `/pokemon-tcg/[productSlug]` | Product page                                    | ISR 60 s  | yes; archived: `noindex` |
+| `/kategori/[slug]`           | Category landing page                           | dynamic   | yes (unfiltered)         |
+| `/set/[slug]`                | Pokémon set landing page                        | dynamic   | yes (unfiltered)         |
+| `/nyheter`                   | ACTIVE products published in the last 60 days   | dynamic   | yes                      |
+| `/kommande`                  | COMING_SOON, preorders and future release dates | dynamic   | yes                      |
+| `/sok?q=…`                   | Search results                                  | dynamic   | no                       |
+| `/review/[token]`            | Secure review page (Milestone 11)               | —         | no                       |
+
+Unknown product, category and set slugs, draft or unpublished products, and
+page numbers beyond the last page return HTTP 404 with the store's 404 page.
+
+### Listing parameters
+
+Validated server-side (`src/server/domain/catalog-params.ts`). Invalid values
+are ignored rather than rejected.
+
+| Parameter        | Values                                                                           | Where                         |
+| ---------------- | -------------------------------------------------------------------------------- | ----------------------------- |
+| `kategori`       | category slug                                                                    | `/pokemon-tcg`, `/set/*`      |
+| `set`            | set slug                                                                         | `/pokemon-tcg`, `/kategori/*` |
+| `tillganglighet` | `i-lager` (purchasable now, including preorders)                                 | listings, search              |
+| `sortering`      | `nyast` (default), `pris-stigande`, `pris-fallande`; `relevans` (search default) | listings, search              |
+| `sida`           | 1–500                                                                            | all listings                  |
+| `q`              | search text, max 100 characters                                                  | `/sok`                        |
+
+### SEO behavior per page type
+
+| Page type      | Title / description                                                                       | Canonical                     | Robots                                   |
+| -------------- | ----------------------------------------------------------------------------------------- | ----------------------------- | ---------------------------------------- |
+| Homepage       | `StoreSettings.defaultSeoTitle/Description`, else generated                               | `/`                           | index                                    |
+| Product        | `seoTitle` → name; `seoDescription` → short description → description excerpt → generated | own URL                       | index; archived `noindex`                |
+| Category / set | `seoTitle` → "{name} – Pokémon TCG(-set)"; `seoDescription` → description → generated     | unfiltered URL                | index; filtered/sorted `noindex, follow` |
+| Listings       | fixed Swedish title and description                                                       | self (with `?sida=` when > 1) | index; filtered/sorted `noindex, follow` |
+| Search         | "Sökresultat för ”q”"                                                                     | `/sok`                        | `noindex, follow`                        |
+
+- Titles use the "%s | HeavyCards" template.
+- Descriptions are cut to 160 characters at a word boundary.
+- Every product, category and set page has visible breadcrumbs plus
+  BreadcrumbList JSON-LD.
+- Product pages also have basic Product/Offer JSON-LD, with AggregateRating
+  and reviews from approved reviews only.
+- The sitemap, redirects and full structured data are completed in
+  Milestone 13.
+
+### Product states on the storefront
+
+| State (`getAvailability`) | When                                                      | Label                      | Purchasable |
+| ------------------------- | --------------------------------------------------------- | -------------------------- | ----------- |
+| in stock                  | ACTIVE, available > low-stock threshold                   | I lager                    | yes         |
+| low stock                 | ACTIVE, 0 < available ≤ `StoreSettings.lowStockThreshold` | Få kvar i lager            | yes         |
+| sold out                  | ACTIVE, available = 0                                     | Slutsåld                   | no          |
+| preorder                  | `isPreorder` (ACTIVE or COMING_SOON), available > 0       | Förbeställ                 | yes         |
+| preorder sold out         | `isPreorder`, available = 0                               | Förbeställningar slutsålda | no          |
+| coming soon               | COMING_SOON without preorder                              | Kommer snart               | no          |
+| discontinued              | ARCHIVED (page only, never listed)                        | Säljs inte längre          | no          |
+
+- `available = stockOnHand − active, unexpired reservations`.
+- Exact quantities are never shown.
+- For preorders, `stockOnHand` is the preorder allocation.
 
 ## Information and legal
 

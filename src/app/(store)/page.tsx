@@ -1,13 +1,45 @@
+import type { Metadata } from "next";
+
+import { SectionHeading } from "@/components/store/headings";
+import {
+  ProductCard,
+  ProductGrid,
+  type ProductCardData,
+} from "@/components/store/product-card";
+import { CategoryTiles } from "@/components/store/taxonomy-links";
 import { ButtonLink } from "@/components/ui/button";
 import { Container } from "@/components/ui/container";
 import { LockIcon, PackageIcon, TruckIcon } from "@/components/ui/icons";
 import { Section } from "@/components/ui/section";
+import { siteConfig } from "@/lib/config/site";
+import { db } from "@/lib/db/client";
+import { firstText, pageMetadata } from "@/lib/seo/metadata";
+import { presentationContext } from "@/server/catalog/listing";
+import { toProductCardData } from "@/server/catalog/presenters";
+import {
+  listCategories,
+  listProducts,
+  type ListingQuery,
+} from "@/server/data/catalog-queries";
+import { getPublicStoreInfo } from "@/server/data/store-settings";
 
-/*
- * Homepage shell. Demonstrates the visual system without inventing catalog
- * content: product sections (new arrivals, categories, featured, upcoming)
- * are populated from the database in Milestone 4.
- */
+// Served from cache and refreshed at most every 60 seconds, so the homepage
+// follows catalog changes without a redeploy (PROJECT.md §10, §92).
+export const revalidate = 60;
+
+const DEFAULT_TITLE = `${siteConfig.brandName} – Pokémon TCG i Sverige`;
+const DEFAULT_DESCRIPTION =
+  "Förseglade Pokémon TCG-produkter: booster boxes, Elite Trainer Boxes, booster packs och mer. Priser inklusive moms och leverans inom Sverige.";
+
+export async function generateMetadata(): Promise<Metadata> {
+  const info = await getPublicStoreInfo();
+  return pageMetadata({
+    title: firstText(info.defaultSeoTitle) ?? DEFAULT_TITLE,
+    description: firstText(info.defaultSeoDescription) ?? DEFAULT_DESCRIPTION,
+    path: "/",
+    absoluteTitle: true,
+  });
+}
 
 const promises = [
   {
@@ -27,7 +59,23 @@ const promises = [
   },
 ] as const;
 
-export default function HomePage() {
+export default async function HomePage() {
+  const now = new Date();
+  const section = (query: Partial<ListingQuery>) =>
+    listProducts(db, { sort: "newest", page: 1, pageSize: 4, now, ...query });
+
+  // One round of parallel queries; each section is bounded.
+  const [featured, newArrivals, upcoming, categories, context] =
+    await Promise.all([
+      section({ scope: "featured" }),
+      section({ scope: "new", pageSize: 8 }),
+      section({ scope: "upcoming", sort: "release" }),
+      listCategories(db, now),
+      presentationContext(now),
+    ]);
+  const cards = (items: typeof featured.items) =>
+    items.map((item) => toProductCardData(item, context));
+
   return (
     <>
       <Section tone="inverted" className="overflow-hidden">
@@ -71,6 +119,83 @@ export default function HomePage() {
           </ul>
         </Container>
       </Section>
+
+      <ProductSection
+        id="utvalda"
+        eyebrow="Utvalt av HeavyCards"
+        title="Utvalda produkter"
+        action={{ label: "Hela sortimentet", href: "/pokemon-tcg" }}
+        products={cards(featured.items)}
+        priority
+      />
+
+      {categories.some((category) => category.productCount > 0) && (
+        <Section className="border-t border-border" aria-label="Kategorier">
+          <Container>
+            <SectionHeading
+              title="Kategorier"
+              action={{ label: "Pokémon TCG", href: "/pokemon-tcg" }}
+            />
+            <CategoryTiles categories={categories} />
+          </Container>
+        </Section>
+      )}
+
+      <ProductSection
+        id="nyheter"
+        eyebrow="Nytt i butiken"
+        title="Nyheter"
+        action={{ label: "Alla nyheter", href: "/nyheter" }}
+        products={cards(newArrivals.items)}
+      />
+
+      <ProductSection
+        id="kommande"
+        eyebrow="Släppkalender"
+        title="Kommande släpp"
+        action={{ label: "Alla kommande", href: "/kommande" }}
+        products={cards(upcoming.items)}
+      />
     </>
+  );
+}
+
+/** A homepage product row; renders nothing when the section has no products. */
+function ProductSection({
+  id,
+  eyebrow,
+  title,
+  action,
+  products,
+  priority = false,
+}: {
+  id: string;
+  eyebrow: string;
+  title: string;
+  action: { label: string; href: string };
+  products: ProductCardData[];
+  priority?: boolean;
+}) {
+  if (products.length === 0) return null;
+
+  return (
+    <Section
+      className="border-t border-border"
+      aria-label={title}
+      data-section={id}
+    >
+      <Container>
+        <SectionHeading eyebrow={eyebrow} title={title} action={action} />
+        <ProductGrid>
+          {products.map((product, index) => (
+            <ProductCard
+              key={product.href}
+              product={product}
+              priority={priority && index < 4}
+            />
+          ))}
+        </ProductGrid>
+      </Container>
+    </Section>
   );
 }

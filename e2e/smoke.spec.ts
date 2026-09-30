@@ -1,13 +1,11 @@
 import { expect, test } from "@playwright/test";
 
-import { isPendingRoute } from "./pending-routes";
-
 test.describe("smoke", () => {
   test("homepage renders in Swedish without console errors", async ({
     page,
   }) => {
     const consoleErrors: string[] = [];
-    const unexpectedFailures: string[] = [];
+    const failedResponses: string[] = [];
     page.on("console", (message) => {
       // Resource failures are checked by URL below; the console text has none.
       if (
@@ -18,8 +16,8 @@ test.describe("smoke", () => {
       }
     });
     page.on("response", (res) => {
-      if (res.status() >= 400 && !isPendingRoute(res.url())) {
-        unexpectedFailures.push(`${res.status()} ${res.url()}`);
+      if (res.status() >= 400) {
+        failedResponses.push(`${res.status()} ${res.url()}`);
       }
     });
 
@@ -27,7 +25,7 @@ test.describe("smoke", () => {
 
     expect(response?.status()).toBe(200);
     await expect(page.locator("html")).toHaveAttribute("lang", "sv");
-    await expect(page).toHaveTitle("HeavyCards");
+    await expect(page).toHaveTitle(/^HeavyCards/);
     await expect(
       page.getByRole("heading", {
         level: 1,
@@ -38,7 +36,8 @@ test.describe("smoke", () => {
     // "networkidle", so wait a fixed, short time instead).
     await page.waitForTimeout(1_000);
     expect(consoleErrors).toEqual([]);
-    expect(unexpectedFailures).toEqual([]);
+    // Includes Next.js link prefetches: every linked route must exist.
+    expect(failedResponses).toEqual([]);
   });
 
   test("responses carry baseline security headers", async ({ request }) => {

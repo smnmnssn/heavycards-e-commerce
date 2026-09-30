@@ -6,14 +6,24 @@ import { cn } from "@/lib/utils";
 
 /**
  * Product search entry point: a plain GET form to /sok, so it works without
- * JavaScript. Search results are implemented in Milestone 4.
+ * JavaScript. Results are rendered by the /sok page.
  */
-export function HeaderSearch({ className }: { className?: string }) {
+export function HeaderSearch({
+  className,
+  defaultValue,
+  label = "Produktsök",
+}: {
+  className?: string;
+  defaultValue?: string;
+  /** Accessible name of the search landmark (unique per page). */
+  label?: string;
+}) {
   const inputId = useId();
 
   return (
     <form
       role="search"
+      aria-label={label}
       action={searchPath}
       method="get"
       className={cn("relative", className)}
@@ -25,6 +35,7 @@ export function HeaderSearch({ className }: { className?: string }) {
         id={inputId}
         type="search"
         name="q"
+        defaultValue={defaultValue}
         placeholder="Sök produkter"
         autoComplete="off"
         enterKeyHint="search"
