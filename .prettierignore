@@ -8,5 +8,6 @@ test-results
 node_modules
 package-lock.json
 next-env.d.ts
+src/generated
 # The specification is maintained by hand; keep its formatting as authored.
 PROJECT.md

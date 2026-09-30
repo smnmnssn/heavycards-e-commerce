@@ -14,6 +14,7 @@ const eslintConfig = defineConfig([
     "blob-report/**",
     "test-results/**",
     "next-env.d.ts",
+    "src/generated/**",
   ]),
 ]);
 

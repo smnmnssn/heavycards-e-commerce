@@ -1,0 +1,448 @@
+// HeavyCards database schema.
+//
+// Conventions (see docs/database.md for the reasoning):
+// - Tables and columns are snake_case in PostgreSQL via @@map/@map.
+// - Primary keys are UUIDv7 (time-ordered) stored as native `uuid`.
+// - Money is stored as integer minor units (öre) in `*Amount` columns.
+// - Timestamps are `timestamptz`; calendar dates (release dates) are `date`.
+// - Rows with financial or historical meaning are never cascade-deleted:
+//   relations to them use `Restrict`, so deletion must be deliberate.
+// - CHECK constraints that Prisma cannot express live in the migration SQL.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+/// Conceptual product kind. V1 fully supports SEALED and generic products;
+/// SINGLE and GRADED get their own 1:1 detail tables when they are built.
+enum ProductType {
+  SEALED
+  SINGLE
+  GRADED
+  ACCESSORY
+  OTHER
+}
+
+/// Editorial status. "Sold out" is never stored: it is derived from inventory.
+enum ProductStatus {
+  DRAFT
+  ACTIVE
+  COMING_SOON
+  ARCHIVED
+}
+
+enum Currency {
+  SEK
+}
+
+/// Payment lifecycle, synchronized from verified Stripe webhooks only.
+/// EXPIRED marks a checkout that was abandoned before any payment attempt
+/// completed, which is distinct from a FAILED payment.
+enum PaymentStatus {
+  PENDING
+  PAID
+  PARTIALLY_REFUNDED
+  REFUNDED
+  FAILED
+  EXPIRED
+}
+
+/// Physical fulfillment lifecycle, managed by administrators.
+enum FulfillmentStatus {
+  NEW
+  PROCESSING
+  SHIPPED
+  COMPLETED
+  CANCELLED
+}
+
+enum ShippingCarrier {
+  POSTNORD
+  OTHER
+}
+
+enum ReservationStatus {
+  ACTIVE
+  CONSUMED
+  RELEASED
+}
+
+enum ReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum AdminRole {
+  OWNER
+  ADMIN
+}
+
+// ---------------------------------------------------------------------------
+// Catalog
+// ---------------------------------------------------------------------------
+
+model Category {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  name           String    @db.VarChar(120)
+  slug           String    @unique @db.VarChar(120)
+  description    String?
+  seoTitle       String?   @map("seo_title") @db.VarChar(200)
+  seoDescription String?   @map("seo_description") @db.VarChar(500)
+  /// Display order in navigation and on the homepage (ascending).
+  sortOrder      Int       @default(0) @map("sort_order")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  products       Product[]
+
+  @@map("categories")
+}
+
+model PokemonSet {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  name           String    @db.VarChar(120)
+  slug           String    @unique @db.VarChar(120)
+  description    String?
+  releaseDate    DateTime? @map("release_date") @db.Date
+  seoTitle       String?   @map("seo_title") @db.VarChar(200)
+  seoDescription String?   @map("seo_description") @db.VarChar(500)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  products       Product[]
+
+  @@map("pokemon_sets")
+}
+
+model Product {
+  id                   String        @id @default(uuid(7)) @db.Uuid
+  name                 String        @db.VarChar(200)
+  slug                 String        @unique @db.VarChar(200)
+  shortDescription     String?       @map("short_description") @db.VarChar(500)
+  description          String?
+  productType          ProductType   @default(SEALED) @map("product_type")
+  /// VAT-inclusive unit price in öre (149900 = 1 499,00 kr).
+  priceAmount          Int           @map("price_amount")
+  /// Optional "was" price in öre. Must exceed priceAmount (CHECK constraint).
+  compareAtPriceAmount Int?          @map("compare_at_price_amount")
+  sku                  String        @unique @db.VarChar(64)
+  /// Physically available units. Reservations are subtracted to get
+  /// available-to-sell; see src/server/domain/inventory.ts.
+  stockOnHand          Int           @default(0) @map("stock_on_hand")
+  status               ProductStatus @default(DRAFT)
+  categoryId           String        @map("category_id") @db.Uuid
+  pokemonSetId         String?       @map("pokemon_set_id") @db.Uuid
+  isFeatured           Boolean       @default(false) @map("is_featured")
+  isPreorder           Boolean       @default(false) @map("is_preorder")
+  releaseDate          DateTime?     @map("release_date") @db.Date
+  seoTitle             String?       @map("seo_title") @db.VarChar(200)
+  seoDescription       String?       @map("seo_description") @db.VarChar(500)
+  /// First time the product became publicly visible. Drives "new arrivals"
+  /// and sitemap timestamps; not reset when a product is edited.
+  publishedAt          DateTime?     @map("published_at") @db.Timestamptz(3)
+  createdAt            DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt            DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  // Categories and sets cannot be deleted while products reference them.
+  category     Category               @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  pokemonSet   PokemonSet?            @relation(fields: [pokemonSetId], references: [id], onDelete: Restrict)
+  images       ProductImage[]
+  orderItems   OrderItem[]
+  reservations InventoryReservation[]
+  reviews      Review[]
+
+  @@index([status, publishedAt])
+  @@index([categoryId])
+  @@index([pokemonSetId])
+  @@map("products")
+}
+
+model ProductImage {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  productId  String   @map("product_id") @db.Uuid
+  /// Provider-neutral object key (e.g. Vercel Blob pathname), used for deletion.
+  storageKey String   @unique @map("storage_key") @db.VarChar(500)
+  /// Public URL served to browsers.
+  url        String   @db.VarChar(2000)
+  /// Blank means "generate from the product name" at render time.
+  altText    String?  @map("alt_text") @db.VarChar(300)
+  /// Ascending display order; the lowest position is the primary image.
+  position   Int
+  /// Intrinsic pixel dimensions, stored so images render without layout shift.
+  width      Int
+  height     Int
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  // Images are owned by the product. Deleting blobs in storage is the
+  // application's job; this only removes the rows.
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, position])
+  @@map("product_images")
+}
+
+// ---------------------------------------------------------------------------
+// Orders, inventory and payments
+// ---------------------------------------------------------------------------
+
+model Order {
+  id                      String            @id @default(uuid(7)) @db.Uuid
+  /// Customer-facing number, shown as "HC-<n>". Allocated by a PostgreSQL
+  /// sequence starting at 10001 (see migration), so concurrent checkouts can
+  /// never receive the same number. Never used for authorization.
+  orderNumber             Int               @unique @default(autoincrement()) @map("order_number")
+
+  // Customer details arrive from Stripe Checkout, so they are empty while a
+  // checkout is pending. A CHECK constraint requires them once paid.
+  email                   String?           @db.VarChar(320)
+  firstName               String?           @map("first_name") @db.VarChar(100)
+  lastName                String?           @map("last_name") @db.VarChar(100)
+  phone                   String?           @db.VarChar(40)
+  addressLine1            String?           @map("address_line1") @db.VarChar(200)
+  addressLine2            String?           @map("address_line2") @db.VarChar(200)
+  postalCode              String?           @map("postal_code") @db.VarChar(20)
+  city                    String?           @db.VarChar(100)
+  /// ISO 3166-1 alpha-2. V1 ships to Sweden only (CHECK constraint).
+  country                 String            @default("SE") @db.Char(2)
+
+  // All amounts are VAT-inclusive öre; totalAmount = subtotal + shipping.
+  subtotalAmount          Int               @map("subtotal_amount")
+  shippingAmount          Int               @map("shipping_amount")
+  /// VAT contained in totalAmount (informational, not added on top).
+  taxAmount               Int               @map("tax_amount")
+  totalAmount             Int               @map("total_amount")
+  /// Cumulative amount refunded in Stripe, synchronized from webhooks.
+  refundedAmount          Int               @default(0) @map("refunded_amount")
+  currency                Currency          @default(SEK)
+
+  paymentStatus           PaymentStatus     @default(PENDING) @map("payment_status")
+  fulfillmentStatus       FulfillmentStatus @default(NEW) @map("fulfillment_status")
+  paidAt                  DateTime?         @map("paid_at") @db.Timestamptz(3)
+
+  stripeCheckoutSessionId String?           @unique @map("stripe_checkout_session_id") @db.VarChar(255)
+  stripePaymentIntentId   String?           @unique @map("stripe_payment_intent_id") @db.VarChar(255)
+
+  shippingCarrier         ShippingCarrier?  @map("shipping_carrier")
+  trackingNumber          String?           @map("tracking_number") @db.VarChar(100)
+  shippedAt               DateTime?         @map("shipped_at") @db.Timestamptz(3)
+
+  // Idempotency markers: an email is sent only while its marker is NULL.
+  confirmationEmailSentAt DateTime?         @map("confirmation_email_sent_at") @db.Timestamptz(3)
+  shippingEmailSentAt     DateTime?         @map("shipping_email_sent_at") @db.Timestamptz(3)
+
+  createdAt               DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt               DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  items        OrderItem[]
+  reservations InventoryReservation[]
+  reviewTokens ReviewToken[]
+
+  @@index([paymentStatus, fulfillmentStatus])
+  @@index([paidAt])
+  @@index([createdAt])
+  @@index([email])
+  @@map("orders")
+}
+
+/// Immutable purchase line. Name, SKU, price and VAT rate are snapshots taken
+/// at checkout, so later product edits never change historical orders.
+model OrderItem {
+  id                  String   @id @default(uuid(7)) @db.Uuid
+  orderId             String   @map("order_id") @db.Uuid
+  productId           String   @map("product_id") @db.Uuid
+  productNameSnapshot String   @map("product_name_snapshot") @db.VarChar(200)
+  skuSnapshot         String   @map("sku_snapshot") @db.VarChar(64)
+  quantity            Int
+  unitPriceAmount     Int      @map("unit_price_amount")
+  /// unitPriceAmount × quantity (CHECK constraint).
+  totalPriceAmount    Int      @map("total_price_amount")
+  /// VAT rate applied at purchase, in basis points (2500 = 25 %).
+  vatRateBasisPoints  Int      @map("vat_rate_basis_points")
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  // Orders are financial records and are never deleted; products with sales
+  // history must be archived instead of deleted.
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  review  Review?
+
+  /// One line per product per order; quantities are merged. This also makes
+  /// "one verified review per purchased product per order" enforceable.
+  @@unique([orderId, productId])
+  @@index([productId])
+  @@map("order_items")
+}
+
+/// Units held for a pending checkout. Available-to-sell is
+/// stockOnHand − Σ(quantity of ACTIVE reservations whose expiresAt is in the
+/// future). Payment consumes a reservation (and decrements stockOnHand in the
+/// same transaction); expiry or failure releases it.
+model InventoryReservation {
+  id        String            @id @default(uuid(7)) @db.Uuid
+  orderId   String            @map("order_id") @db.Uuid
+  productId String            @map("product_id") @db.Uuid
+  quantity  Int
+  status    ReservationStatus @default(ACTIVE)
+  expiresAt DateTime          @map("expires_at") @db.Timestamptz(3)
+  createdAt DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([orderId, productId])
+  @@index([productId, status])
+  @@index([status, expiresAt])
+  @@map("inventory_reservations")
+}
+
+/// Processed Stripe webhook events. The unique stripeEventId is the
+/// idempotency key: the event row is inserted in the same transaction as its
+/// side effects, so a redelivered event hits the constraint and is skipped.
+model StripeEvent {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  stripeEventId String   @unique @map("stripe_event_id") @db.VarChar(255)
+  type          String   @db.VarChar(100)
+  processedAt   DateTime @default(now()) @map("processed_at") @db.Timestamptz(3)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@map("stripe_events")
+}
+
+// ---------------------------------------------------------------------------
+// Reviews
+// ---------------------------------------------------------------------------
+
+model Review {
+  id               String       @id @default(uuid(7)) @db.Uuid
+  productId        String       @map("product_id") @db.Uuid
+  /// Purchased line this review is based on. Unique, so each purchased
+  /// product on an order can be reviewed at most once.
+  orderItemId      String?      @unique @map("order_item_id") @db.Uuid
+  displayName      String       @map("display_name") @db.VarChar(60)
+  /// 1–5 stars (CHECK constraint).
+  rating           Int          @db.SmallInt
+  title            String?      @db.VarChar(120)
+  body             String
+  /// Set server-side only. CHECK constraint: requires orderItemId.
+  verifiedPurchase Boolean      @default(false) @map("verified_purchase")
+  status           ReviewStatus @default(PENDING)
+  createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  product   Product    @relation(fields: [productId], references: [id], onDelete: Restrict)
+  orderItem OrderItem? @relation(fields: [orderItemId], references: [id], onDelete: Restrict)
+
+  @@index([productId, status])
+  @@index([status, createdAt])
+  @@map("reviews")
+}
+
+/// Secure review link for a paid order. Only the SHA-256 hash of the random
+/// token is stored; the raw token exists only in the emailed URL.
+model ReviewToken {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  orderId   String    @map("order_id") @db.Uuid
+  /// Lowercase hex SHA-256 of the raw token.
+  tokenHash String    @unique @map("token_hash") @db.Char(64)
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(3)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@map("review_tokens")
+}
+
+// ---------------------------------------------------------------------------
+// Administration
+// ---------------------------------------------------------------------------
+
+/// Individual administrator identity. Accounts are deactivated, not deleted,
+/// so the audit trail stays attributable. Session/credential tables required
+/// by the auth library are added in Milestone 6.
+model AdminUser {
+  id           String     @id @default(uuid(7)) @db.Uuid
+  name         String     @db.VarChar(120)
+  /// Stored lowercase (CHECK constraint) so uniqueness is case-insensitive.
+  email        String     @unique @db.VarChar(320)
+  /// NULL until the invited administrator sets a password (Milestone 6).
+  passwordHash String?    @map("password_hash") @db.VarChar(255)
+  role         AdminRole  @default(ADMIN)
+  isActive     Boolean    @default(false) @map("is_active")
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+  auditLogs    AuditLog[]
+
+  @@map("admin_users")
+}
+
+/// Append-only record of important changes. adminUserId is NULL for system
+/// actions (e.g. a verified Stripe webhook marking an order paid). Metadata
+/// must never contain secrets, passwords, raw tokens or payment credentials.
+model AuditLog {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  adminUserId String?  @map("admin_user_id") @db.Uuid
+  /// e.g. UPDATE_PRODUCT_STOCK, UPDATE_ORDER_STATUS, APPROVE_REVIEW.
+  action      String   @db.VarChar(100)
+  entityType  String   @map("entity_type") @db.VarChar(50)
+  entityId    String   @map("entity_id") @db.VarChar(100)
+  metadata    Json?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  adminUser AdminUser? @relation(fields: [adminUserId], references: [id], onDelete: Restrict)
+
+  @@index([entityType, entityId, createdAt])
+  @@index([adminUserId, createdAt])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+/// Permanent redirects for changed public URLs (e.g. a renamed product slug).
+model Redirect {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  sourcePath      String   @unique @map("source_path") @db.VarChar(500)
+  destinationPath String   @map("destination_path") @db.VarChar(500)
+  permanent       Boolean  @default(true)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([destinationPath])
+  @@map("redirects")
+}
+
+/// Single-row store configuration (id is always 1, CHECK constraint).
+/// Secrets never belong here; they live in environment variables.
+model StoreSettings {
+  id                          Int             @id @default(1)
+  storeName                   String          @map("store_name") @db.VarChar(120)
+  contactEmail                String          @map("contact_email") @db.VarChar(320)
+  companyName                 String?         @map("company_name") @db.VarChar(200)
+  /// Swedish organisationsnummer.
+  organizationNumber          String?         @map("organization_number") @db.VarChar(20)
+  /// Flat shipping price in öre, VAT-inclusive.
+  shippingPriceAmount         Int             @map("shipping_price_amount")
+  /// Subtotal (öre) at or above which shipping is free. NULL disables it.
+  freeShippingThresholdAmount Int?            @map("free_shipping_threshold_amount")
+  defaultShippingCarrier      ShippingCarrier @default(POSTNORD) @map("default_shipping_carrier")
+  /// VAT rate for new orders in basis points (2500 = 25 %). Snapshotted onto
+  /// each order item so a future rate change never alters old orders.
+  vatRateBasisPoints          Int             @default(2500) @map("vat_rate_basis_points")
+  /// Available-to-sell at or below this counts as "low stock" in admin.
+  lowStockThreshold           Int             @map("low_stock_threshold")
+  defaultSeoTitle             String?         @map("default_seo_title") @db.VarChar(200)
+  defaultSeoDescription       String?         @map("default_seo_description") @db.VarChar(500)
+  createdAt                   DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                   DateTime        @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("store_settings")
+}

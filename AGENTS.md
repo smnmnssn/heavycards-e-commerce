@@ -3,7 +3,9 @@
 - [PROJECT.md](PROJECT.md) is the canonical specification. Read it in full before changing files and work milestone by milestone.
 - Record meaningful decisions in [docs/architecture.md](docs/architecture.md).
 - Pin dependencies exactly (no `^`/`~`). Verify compatibility before adding or upgrading a package.
-- Before reporting work as done, run: `npm run format:check`, `npm run lint`, `npm run typecheck`, `npm test`, `npm run build` and `npm run test:e2e`.
+- Before reporting work as done, run: `npm run format:check`, `npm run lint`, `npm run typecheck`, `npm test`, `npm run test:db`, `npm run db:check`, `npm run build` and `npm run test:e2e` (the local database must be running: `docker compose up -d`).
+- Schema changes go through migrations (see README → Database). Keep [docs/database.md](docs/database.md) in sync with the schema.
+- Never run destructive database commands (`db:reset`, `migrate reset`, dropping databases) without the user's explicit consent.
 
 <!-- BEGIN:nextjs-agent-rules -->
 

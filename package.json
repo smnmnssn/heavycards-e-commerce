@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "HeavyCards – svensk e-handel för Pokémon TCG-produkter.",
+  "type": "module",
   "engines": {
     "node": "24.x"
   },
@@ -14,11 +15,21 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "next typegen && tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test": "vitest run --project unit",
+    "test:watch": "vitest --project unit",
+    "test:db": "vitest run --project db",
+    "test:e2e": "playwright test",
+    "postinstall": "prisma generate",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:check": "prisma validate && prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code",
+    "db:seed": "prisma db seed",
+    "db:reset": "prisma migrate reset && prisma db seed"
   },
   "dependencies": {
+    "@prisma/adapter-pg": "7.10.0",
+    "@prisma/client": "7.10.0",
     "clsx": "2.1.1",
     "next": "16.3.8",
     "react": "19.3.0",
@@ -37,7 +48,9 @@
     "eslint-config-next": "16.3.8",
     "prettier": "3.9.9",
     "prettier-plugin-tailwindcss": "0.8.1",
+    "prisma": "7.10.0",
     "tailwindcss": "4.3.3",
+    "tsx": "4.23.15",
     "typescript": "6.0.3",
     "vite": "8.3.1",
     "vitest": "5.0.3"

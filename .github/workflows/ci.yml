@@ -15,11 +15,32 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+
+    services:
+      # Disposable database for this run only; credentials are CI-local.
+      postgres:
+        image: postgres:18.6-alpine
+        env:
+          POSTGRES_USER: heavycards
+          POSTGRES_PASSWORD: heavycards
+          POSTGRES_DB: heavycards
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U heavycards -d heavycards"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+
     env:
       NEXT_TELEMETRY_DISABLED: "1"
       # Matches the Playwright web server port; production builds require APP_URL.
       APP_URL: http://localhost:3100
+      DATABASE_URL: postgresql://heavycards:heavycards@localhost:5432/heavycards
+      # Created on demand by the DB test setup (`prisma migrate deploy`).
+      TEST_DATABASE_URL: postgresql://heavycards:heavycards@localhost:5432/heavycards_test
+
     steps:
       # Actions are pinned to commit SHAs for reproducible, tamper-resistant builds.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -29,12 +50,24 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
+      # Also generates the Prisma client (postinstall).
       - run: npm ci
 
       - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+
+      # Every run migrates an empty database from zero, then verifies that the
+      # migrations produce exactly the schema in prisma/schema.prisma.
+      - name: Migrate fresh database
+        run: npm run db:deploy
+      - name: Verify schema and migrations are in sync
+        run: npm run db:check
+      - name: Seed (twice, to verify idempotency)
+        run: npm run db:seed && npm run db:seed
+
+      - run: npm run test:db
       - run: npm run build
 
       - name: Install Playwright browser

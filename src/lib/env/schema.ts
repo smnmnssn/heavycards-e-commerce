@@ -22,6 +22,11 @@ const optionalNonEmpty = <T extends z.ZodType>(schema: T) =>
 
 const httpUrl = z.url({ protocol: /^https?$/ });
 
+const postgresUrl = z.url({
+  protocol: /^postgres(ql)?$/,
+  error: "must be a postgresql:// connection URL",
+});
+
 const rawServerEnvSchema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
@@ -31,6 +36,7 @@ const rawServerEnvSchema = z.object({
   ),
   VERCEL_URL: optionalNonEmpty(z.string()),
   APP_URL: optionalNonEmpty(httpUrl),
+  DATABASE_URL: postgresUrl,
 });
 
 export type ServerEnv = Readonly<{
@@ -38,6 +44,8 @@ export type ServerEnv = Readonly<{
   vercelEnv: "development" | "preview" | "production" | undefined;
   /** Canonical origin without trailing slash, e.g. `https://heavycards.se`. */
   siteUrl: string;
+  /** PostgreSQL connection URL. Contains credentials: never log it. */
+  databaseUrl: string;
 }>;
 
 export class EnvValidationError extends Error {
@@ -111,5 +119,6 @@ export function parseServerEnv(
     nodeEnv: result.data.NODE_ENV,
     vercelEnv: result.data.VERCEL_ENV,
     siteUrl,
+    databaseUrl: result.data.DATABASE_URL,
   });
 }
