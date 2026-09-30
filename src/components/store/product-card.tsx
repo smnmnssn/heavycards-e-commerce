@@ -4,9 +4,9 @@ import type { ReactNode } from "react";
 
 import { Badge, type BadgeVariant } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { siteConfig } from "@/lib/config/site";
 import { cn } from "@/lib/utils";
 
+import { ImagePlaceholder } from "./image-placeholder";
 import { Price } from "./price";
 
 export type ProductCardBadge = Readonly<{
@@ -72,12 +72,7 @@ export function ProductCard({
             )}
           />
         ) : (
-          <div
-            aria-hidden="true"
-            className="flex size-full items-center justify-center text-[0.6875rem] font-bold tracking-[0.2em] text-muted-foreground uppercase [font-stretch:125%]"
-          >
-            {siteConfig.brandName}
-          </div>
+          <ImagePlaceholder />
         )}
         {badges.length > 0 && (
           <ul className="absolute top-2 left-2 flex flex-wrap gap-1 sm:top-3 sm:left-3">

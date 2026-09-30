@@ -13,7 +13,7 @@ import {
   ReviewSummaryLink,
 } from "@/components/store/product-reviews";
 import {
-  PurchaseActionPlaceholder,
+  PurchaseAction,
   PurchasePanel,
 } from "@/components/store/purchase-panel";
 import { Container } from "@/components/ui/container";
@@ -30,6 +30,7 @@ import {
   toProductCardData,
 } from "@/server/catalog/presenters";
 import { productJsonLd } from "@/server/catalog/product-json-ld";
+import { toCartProductView } from "@/server/cart/cart-products";
 import { getProductPage } from "@/server/data/catalog";
 import {
   listProducts,
@@ -106,6 +107,20 @@ export default async function ProductPage({
     isPreorder: product.isPreorder,
     availableQuantity: product.availableQuantity,
     lowStockThreshold: context.lowStockThreshold,
+  });
+  // Cart data for the add-to-cart control, built with the same rules the
+  // cart API uses (the drawer refreshes it from the server when opened).
+  const cartView = toCartProductView({
+    productId: product.id,
+    name: product.name,
+    slug: product.slug,
+    setName: product.pokemonSet?.name ?? null,
+    status: product.status,
+    isPreorder: product.isPreorder,
+    releaseDate: product.releaseDate,
+    priceAmount: product.priceAmount,
+    availableQuantity: product.availableQuantity,
+    image: product.images[0] ?? null,
   });
   const releasedAlready =
     product.releaseDate !== null && product.releaseDate <= context.today;
@@ -205,7 +220,7 @@ export default async function ProductPage({
               state={state}
               releaseDate={product.releaseDate}
               releasedAlready={releasedAlready}
-              action={<PurchaseActionPlaceholder state={state} />}
+              action={<PurchaseAction state={state} product={cartView} />}
             />
           </div>
 

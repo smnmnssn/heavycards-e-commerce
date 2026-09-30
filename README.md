@@ -18,8 +18,9 @@ server-side logic. Market: Sweden only, Swedish UI, SEK.
 | 2 — Database foundation   | Done  |
 | 3 — Storefront design     | Done  |
 | 4 — Catalog               | Done  |
-| 5 — Cart                  | Next  |
-| 6–15                      | —     |
+| 5 — Cart                  | Done  |
+| 6 — Admin authentication  | Next  |
+| 7–15                      | —     |
 
 Sections below marked _(later milestone)_ are placeholders and are filled in as
 those features land.
@@ -153,16 +154,10 @@ docs/             architecture decisions
 
 ## Branding and design
 
-The official HeavyCards logo is **not yet in the repository**. The UI uses a
-temporary text-only wordmark. Do not replace or redraw the logo.
-
-To install it:
-
-1. Place the file at `public/brand/heavycards-logo.svg` (or a high-resolution
-   PNG/WebP).
-2. Set `brandAssets.logo` in `src/lib/config/brand.ts`.
-
-The footer needs a light version for its black background.
+The official HeavyCards mark is `public/brand/heavycards-mark.svg` (single
+colour, `currentColor`). One file serves light and dark surfaces through the
+`BrandMark` component (CSS mask). Do not replace, redraw, rasterize or
+recolour it.
 
 The design system (tokens, typography, components, accessibility) is described
 in [docs/design-system.md](docs/design-system.md). In development, open

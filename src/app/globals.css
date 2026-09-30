@@ -232,6 +232,18 @@
 
 @layer components {
   /*
+   * The brand mark is a mask filled with currentColor. Forced-colors modes
+   * (e.g. Windows High Contrast) override background colours, which would
+   * erase it, so pin it to the system text colour there.
+   */
+  @media (forced-colors: active) {
+    .brand-mark {
+      forced-color-adjust: none;
+      background-color: CanvasText;
+    }
+  }
+
+  /*
    * Long-form text (information and legal pages). Deliberately small instead
    * of a typography plugin dependency.
    */

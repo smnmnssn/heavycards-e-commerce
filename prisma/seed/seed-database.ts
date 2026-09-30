@@ -318,6 +318,23 @@ export async function seedDatabase(
           publishedDaysAgo: 1,
         },
         {
+          // A second preorder with a later release date: the V1 one-shipment
+          // rule keeps it out of a cart holding the ETB above.
+          sku: "UPCOMING-BNDL-EN",
+          slug: "kommande-set-booster-bundle",
+          name: "Kommande set Booster Bundle",
+          shortDescription:
+            "Booster bundle från ett kommande set. Släpps senare än övriga produkter i setet.",
+          category: "booster-packs",
+          set: "kommande-set",
+          priceAmount: 34_900,
+          stockOnHand: 30,
+          status: "COMING_SOON",
+          isPreorder: true,
+          releaseDate: futureDate(75),
+          publishedDaysAgo: 1,
+        },
+        {
           sku: "ME01-BB-EN",
           slug: "mega-evolution-booster-box",
           name: "Mega Evolution Booster Box",

@@ -14,19 +14,20 @@ export function cartButtonLabel(count: number): string {
 type CartButtonProps = Omit<ComponentProps<"button">, "children"> & {
   /** Total item quantity (not number of lines, PROJECT.md §20). */
   count: number;
-  /** Plays the short confirmation pulse when an item has just been added. */
-  pulse?: boolean;
+  /**
+   * Increments after each successful add. A new key remounts the icon, which
+   * replays the short pulse once (skipped under reduced motion).
+   */
+  pulseKey?: number;
 };
 
 /**
- * Header cart trigger. Presentational: in Milestone 5 a client wrapper
- * supplies the live `count`, toggles `pulse` after "Lägg i kundvagn" and opens
- * the cart drawer on click (adding `aria-haspopup="dialog"` then). The drawer
- * only ever opens from this explicit click, never automatically (§19).
+ * Header cart button (presentational). `CartTrigger` supplies the live count
+ * and pulse and opens the drawer on click, the only way it ever opens (§19).
  */
 export function CartButton({
   count,
-  pulse = false,
+  pulseKey = 0,
   className,
   ...props
 }: CartButtonProps) {
@@ -43,7 +44,12 @@ export function CartButton({
       {...props}
     >
       <span
-        className={cn("inline-flex", pulse && "motion-safe:animate-cart-pulse")}
+        key={pulseKey}
+        data-pulse={pulseKey > 0 ? pulseKey : undefined}
+        className={cn(
+          "inline-flex",
+          pulseKey > 0 && "motion-safe:animate-cart-pulse",
+        )}
       >
         <BagIcon className="size-6" />
       </span>

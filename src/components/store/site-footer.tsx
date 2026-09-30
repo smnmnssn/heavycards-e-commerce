@@ -5,6 +5,8 @@ import { footerNavigation } from "@/lib/config/navigation";
 import { siteConfig } from "@/lib/config/site";
 import { getPublicStoreInfo } from "@/server/data/store-settings";
 
+import { BrandMark } from "./brand-mark";
+
 /**
  * Storefront footer on the inverted (black) brand surface. Company details
  * come from store settings; optional fields are simply omitted when unset.
@@ -19,9 +21,8 @@ export async function SiteFooter() {
       <Container className="pt-16 pb-10 lg:pt-20">
         <div className="grid gap-12 lg:grid-cols-[1.4fr_2fr] lg:gap-16">
           <div className="max-w-sm">
-            <p className="text-lg leading-none font-extrabold tracking-[0.04em] uppercase [font-stretch:125%]">
-              {siteConfig.brandName}
-            </p>
+            <BrandMark className="h-14" />
+            <p className="sr-only">{siteConfig.brandName}</p>
             <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
               Förseglade Pokémon TCG-produkter för samlare och spelare i
               Sverige.

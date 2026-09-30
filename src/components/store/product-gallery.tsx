@@ -1,8 +1,7 @@
 import Image from "next/image";
 
-import { siteConfig } from "@/lib/config/site";
-
 import { GALLERY_SIZES, type GalleryImage } from "./gallery-shared";
+import { ImagePlaceholder } from "./image-placeholder";
 import { ProductGalleryInteractive } from "./product-gallery-interactive";
 
 /**
@@ -37,19 +36,11 @@ export function ProductGallery({
   return <ProductGalleryInteractive images={images} />;
 }
 
-/**
- * Neutral stand-in until product photos exist (image upload arrives in
- * Milestone 7). Decorative: the product name is already the page heading.
- */
+/** Square frame with the neutral placeholder while a product has no photos. */
 export function ProductImagePlaceholder() {
   return (
-    <div
-      aria-hidden="true"
-      className="flex aspect-square items-center justify-center bg-surface"
-    >
-      <span className="text-sm font-bold tracking-[0.3em] text-muted-foreground uppercase [font-stretch:125%] sm:text-base">
-        {siteConfig.brandName}
-      </span>
+    <div className="aspect-square">
+      <ImagePlaceholder />
     </div>
   );
 }

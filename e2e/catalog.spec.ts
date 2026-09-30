@@ -72,7 +72,7 @@ test.describe("Pokémon TCG landing page", () => {
     await expect(
       page.getByRole("region", { name: "Pokémon-set" }),
     ).toBeVisible();
-    await expect(page.getByText("10 produkter")).toBeVisible();
+    await expect(page.getByText("11 produkter")).toBeVisible();
     const names = await cardNames(page);
     expect(names).toContain("Kommande set Booster Box");
     expect(names).not.toContain("Mega Evolution Booster Box");
@@ -172,7 +172,7 @@ test.describe("filtering and sorting", () => {
           .allTextContents()
       ).map(priceToMinor);
 
-      expect(prices.length).toBe(10);
+      expect(prices.length).toBe(11);
       expect(prices).toEqual([...prices].sort((a, b) => (a - b) * direction));
     }
   });
@@ -185,7 +185,7 @@ test.describe("filtering and sorting", () => {
     );
 
     expect(response?.status()).toBe(200);
-    await expect(page.getByText("10 produkter")).toBeVisible();
+    await expect(page.getByText("11 produkter")).toBeVisible();
   });
 });
 
@@ -208,12 +208,11 @@ test.describe("product page", () => {
       page.getByRole("navigation", { name: "Brödsmulor" }),
     ).toContainText("Elite Trainer Boxes");
 
-    // The purchase control exists but is honestly disabled until Milestone 5.
-    const addToCart = main.getByRole("button", { name: "Lägg i kundvagn" });
-    await expect(addToCart).toBeDisabled();
+    // Purchasable: live quantity selector and add-to-cart (Milestone 5).
     await expect(
-      main.getByText("Köp i webbutiken öppnar snart."),
-    ).toBeVisible();
+      main.getByRole("button", { name: "Lägg i kundvagn" }),
+    ).toBeEnabled();
+    await expect(main.getByRole("group", { name: "Antal" })).toBeVisible();
 
     const reviews = page.getByRole("region", { name: "Recensioner" });
     await expect(reviews).toContainText("Perfekt skick");
@@ -360,6 +359,9 @@ test.describe("search", () => {
     }
 
     await expect(page).toHaveURL(/\/sok\?q=destined\+box/);
+    // Wait for results to replace the loading skeleton.
+    await expect(page.getByText(/Resultat för/)).toBeVisible();
+    await expect(page.getByRole("main").getByRole("article")).toHaveCount(2);
     expect((await cardNames(page)).sort()).toEqual([
       "Destined Rivals Booster Box",
       "Destined Rivals Elite Trainer Box",

@@ -308,3 +308,107 @@ the purchase panel.
 ### Dependencies
 
 None added.
+
+## Milestone 5 — Cart (2026-10-01)
+
+### Cart state architecture
+
+| Layer                                                                                  | Module                              | Runs on           |
+| -------------------------------------------------------------------------------------- | ----------------------------------- | ----------------- |
+| Domain rules: add/set/remove, totals, persistence parsing, one-shipment rules          | `src/lib/cart/cart.ts`              | client and server |
+| Evaluation of a cart against current product data (issues, conflict, display subtotal) | `src/lib/cart/evaluate.ts`          | client and server |
+| Product data for cart IDs (price, availability, limit, shipment group)                 | `src/server/cart/cart-products.ts`  | server            |
+| Read-only JSON endpoint                                                                | `POST /api/cart`                    | server            |
+| Client store: state, storage, hydration, announcements                                 | `src/components/cart/cart-store.ts` | client            |
+| React glue: provider, trigger, add-to-cart, drawer                                     | `src/components/cart/*.tsx`         | client            |
+
+- The store is a small framework-free class read through React's
+  `useSyncExternalStore`. No global-state dependency was added.
+- Mutations are synchronous against a single state object, so rapid clicks
+  always build on the latest quantity.
+- The server snapshot is an empty cart, so SSR and hydration always agree; the
+  badge appears once `localStorage` has been read.
+- Storage and fetch are injected, so the store is unit-tested in Node (races,
+  corrupt or blocked storage, stale data, conflicts).
+
+### Persistence format
+
+- `localStorage["heavycards:cart"]` = `{"v":1,"lines":[{"id":"<uuid>","q":2}]}`.
+- Only product IDs and quantities are stored, never prices, stock, status,
+  shipping or totals.
+- Parsing never throws:
+  - malformed JSON, an unknown version or a wrong shape → empty cart;
+  - invalid lines are dropped (non-UUID IDs, non-integer or < 1 quantities);
+  - duplicates are merged;
+  - quantities are clamped to 99 per line, with at most 50 lines.
+- Blocked or full storage leaves the cart working in memory.
+- Changes in another tab sync through the `storage` event.
+
+### Hydration and validation
+
+- The drawer shows **only server data**. `POST /api/cart` takes up to 50 UUIDs
+  (Zod-validated) and returns, per product: name, slug, set, first image,
+  **current** price, whether it is purchasable now, why not, the maximum
+  orderable quantity (available-to-sell after active reservations, capped at 99) and the shipment group. It sends `Cache-Control: no-store`.
+- Drafts, unpublished and unknown IDs return only `not_found`, so the
+  endpoint reveals nothing about unpublished products.
+- Data is refreshed when the page loads with a stored cart and whenever the
+  drawer opens.
+- The product page seeds its own product's view (`toCartProductView`, the
+  same builder the endpoint uses) so adding needs no round trip.
+- **Milestone 8 reuse:** checkout should call `loadCartProducts` inside its
+  transaction (after locking the product rows) and `evaluateCart`, then
+  compute authoritative totals and shipping. The client subtotal is a display
+  estimate only and is labelled "Slutligt pris bekräftas i kassan".
+
+### Preorder compatibility (locked V1 rules)
+
+- `ShipmentGroup` is either stock, or preorder with its release date.
+  `isPreorder` decides, even after the release date has passed.
+- A cart may hold only in-stock products, or only preorders with **one
+  identical** release date. Preorders without a known date combine only with
+  themselves.
+- Adding an incompatible product changes nothing in the cart. The customer
+  sees a Swedish explanation and a "Visa kundvagnen" action.
+- Unavailable products in a stored cart never block additions; they cannot be
+  ordered anyway.
+- If a stored cart becomes incompatible later (e.g. a release date changes),
+  the drawer shows the conflict and checkout stays blocked.
+
+### Stale carts, quantity and stock
+
+- Lines whose product is no longer purchasable stay visible with a Swedish
+  reason until the customer removes them. They count in the badge, are
+  excluded from the subtotal, and block checkout.
+- Quantities above current availability are lowered to the maximum when data
+  loads. The change is explained on the line and announced.
+- The product page limits the stepper to the available quantity minus what is
+  already in the cart.
+- These are UX guards only. Milestone 8 validates stock transactionally.
+
+### Server vs client changes
+
+- New client code: `CartProvider`, `CartTrigger`, `AddToCart`, `CartDrawer`,
+  `QuantityStepper`.
+- The layout, header, product page and catalog remain Server Components.
+  `StoreShell` wraps them in the provider without converting them.
+
+### Logo
+
+- `public/brand/heavycards-mark.svg` is rendered by `BrandMark` as a CSS mask
+  filled with `currentColor`: one source for light and dark surfaces, with a
+  forced-colors fallback.
+- It replaces the text wordmark in the header and footer, and inside image
+  placeholders.
+
+### Seed
+
+- Added "Kommande set Booster Bundle", a preorder releasing 30 days after the
+  other upcoming products, so the different-release-date rule is exercised in
+  development and E2E. Seeded products: 13.
+- The seeded pending checkout reservation expires 30 minutes after seeding.
+  Tests that depend on availability read it rather than hard-coding it.
+
+### Dependencies
+
+None added.

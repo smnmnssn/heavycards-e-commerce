@@ -48,12 +48,21 @@ describe("CartButton", () => {
     );
   });
 
-  it("applies the pulse animation only when requested, respecting reduced motion", () => {
+  it("pulses only after an add (pulseKey > 0), respecting reduced motion", () => {
     expect(render(<CartButton count={1} />).html).not.toContain(
       "animate-cart-pulse",
     );
-    expect(render(<CartButton count={1} pulse />).html).toContain(
-      "motion-safe:animate-cart-pulse",
-    );
+    const pulsing = render(<CartButton count={1} pulseKey={2} />);
+    expect(pulsing.html).toContain("motion-safe:animate-cart-pulse");
+    expect(pulsing.html).toContain('data-pulse="2"');
+  });
+
+  it("describes the cart with the exact count while the badge caps at 99+", () => {
+    const doc = render(<CartButton count={3} aria-haspopup="dialog" />);
+
+    expect(doc.elements("button")[0]).toMatchObject({
+      "aria-label": "Kundvagn, 3 artiklar",
+      "aria-haspopup": "dialog",
+    });
   });
 });

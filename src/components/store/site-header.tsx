@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { CartTrigger } from "@/components/cart/cart-trigger";
 import { SearchIcon } from "@/components/ui/icons";
 import { Container } from "@/components/ui/container";
 import {
@@ -8,7 +9,6 @@ import {
   searchPath,
 } from "@/lib/config/navigation";
 
-import { CartButton } from "./cart-button";
 import { HeaderSearch } from "./header-search";
 import { Logo } from "./logo";
 import { MobileMenu } from "./mobile-menu";
@@ -16,8 +16,8 @@ import { NavLink } from "./nav-link";
 
 /**
  * Storefront header (server component). Only three small pieces hydrate on
- * the client: the active-state nav links, the mobile menu toggle and, from
- * Milestone 5, the cart trigger.
+ * the client: the active-state nav links, the mobile menu toggle and the
+ * cart trigger.
  *
  * Mobile (< lg): menu · centered logo · search + cart.
  * Desktop (≥ lg): logo · primary navigation · search field + cart.
@@ -58,7 +58,7 @@ export function SiteHeader() {
           >
             <SearchIcon className="size-6" />
           </Link>
-          <CartButton count={0} />
+          <CartTrigger />
         </div>
       </Container>
     </header>

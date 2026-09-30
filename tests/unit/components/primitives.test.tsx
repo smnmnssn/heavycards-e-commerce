@@ -56,14 +56,24 @@ describe("Breadcrumbs", () => {
 });
 
 describe("Logo", () => {
-  it("links home with an accessible name while no logo asset is configured", () => {
+  it("links home with an accessible name and renders the official mark", () => {
     const doc = render(<Logo />);
     const [link] = doc.elements("a");
+    const mark = doc
+      .elements("span")
+      .find((span) => span.class?.includes("brand-mark"));
 
     expect(link).toMatchObject({
       href: "/",
       "aria-label": "HeavyCards – till startsidan",
     });
+    // One SVG source, filled with currentColor via a mask: no raster
+    // variants, no <img>, no CSS invert filter.
     expect(doc.elements("img")).toHaveLength(0);
+    expect(mark?.["aria-hidden"]).toBe("true");
+    expect(mark?.class).toContain("bg-current");
+    expect(mark?.style).toContain("/brand/heavycards-mark.svg");
+    expect(mark?.style).toContain("aspect-ratio:559 / 684");
+    expect(doc.html).not.toContain("invert");
   });
 });

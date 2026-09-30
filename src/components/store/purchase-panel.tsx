@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 
+import { AddToCart } from "@/components/cart/add-to-cart";
+import type { CartProductView } from "@/lib/cart/evaluate";
 import { formatIsoDate, type IsoDate } from "@/lib/dates";
 import { cn } from "@/lib/utils";
 import {
@@ -10,10 +12,9 @@ import {
 
 /*
  * Purchase area of the product page. Catalog rendering (status, release
- * information, preorder terms) lives here; the actual purchase control is
- * passed in as `action`. Milestone 5 supplies the client-side add-to-cart
- * control; until then `PurchaseActionPlaceholder` makes clear that buying is
- * not yet possible instead of pretending to work.
+ * information, preorder terms) lives here; the purchase control is passed in
+ * as `action` (see `PurchaseAction`), so catalog rendering stays independent
+ * of cart behavior.
  */
 
 const dotClass: Record<AvailabilityState, string> = {
@@ -91,18 +92,21 @@ export function PurchasePanel({
 }
 
 /**
- * Stand-in for the add-to-cart control until the cart exists (Milestone 5).
- * Visibly disabled, with the reason stated, so nothing pretends to work.
+ * The purchase control: the real add-to-cart for purchasable products, a
+ * disabled state label for sold-out products, and nothing for products that
+ * cannot be ordered yet (the panel already explains why).
  */
-export function PurchaseActionPlaceholder({
+export function PurchaseAction({
   state,
+  product,
 }: {
   state: AvailabilityState;
+  product: CartProductView;
 }) {
   if (state === "coming_soon" || state === "discontinued") {
     return null;
   }
-  if (!isPurchasable(state)) {
+  if (!isPurchasable(state) || !product.available) {
     return (
       <button
         type="button"
@@ -113,19 +117,5 @@ export function PurchaseActionPlaceholder({
       </button>
     );
   }
-  return (
-    <div className="space-y-2">
-      <button
-        type="button"
-        disabled
-        aria-describedby="kop-oppnar-snart"
-        className="inline-flex h-13 w-full cursor-not-allowed items-center justify-center bg-primary type-nav text-primary-foreground opacity-40"
-      >
-        {state === "preorder" ? "Förbeställ" : "Lägg i kundvagn"}
-      </button>
-      <p id="kop-oppnar-snart" className="text-sm text-muted-foreground">
-        Köp i webbutiken öppnar snart.
-      </p>
-    </div>
-  );
+  return <AddToCart product={product} />;
 }

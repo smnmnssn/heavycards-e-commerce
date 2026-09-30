@@ -1,17 +1,21 @@
 import type { ReactNode } from "react";
 
+import { CartProvider } from "@/components/cart/cart-provider";
+
 import { SiteFooter } from "./site-footer";
 import { SiteHeader } from "./site-header";
 
 export const MAIN_CONTENT_ID = "innehall";
 
 /**
- * Public page frame: skip link, header, main landmark and footer. Used by the
- * (store) layout and by the root not-found page, which renders outside it.
+ * Public page frame: skip link, header, main landmark and footer, inside the
+ * guest cart provider (a client boundary that passes these server-rendered
+ * children through unchanged). Used by the (store) layout and by the root
+ * not-found page, which renders outside it.
  */
 export function StoreShell({ children }: { children: ReactNode }) {
   return (
-    <>
+    <CartProvider>
       <a
         href={`#${MAIN_CONTENT_ID}`}
         className="fixed top-2 left-2 z-50 -translate-y-24 bg-foreground px-4 py-3 type-nav text-background focus-visible:translate-y-0"
@@ -23,6 +27,6 @@ export function StoreShell({ children }: { children: ReactNode }) {
         {children}
       </main>
       <SiteFooter />
-    </>
+    </CartProvider>
   );
 }

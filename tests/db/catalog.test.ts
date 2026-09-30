@@ -49,7 +49,7 @@ describe("listProducts visibility", () => {
     expect(listed).not.toContain("SV3PT5-BNDL-EN"); // ARCHIVED
     expect(listed).toContain("UPCOMING-BB-EN"); // COMING_SOON
     expect(listed).toContain("SV8PT5-ETB-EN"); // ACTIVE, sold out
-    expect(listed).toHaveLength(10);
+    expect(listed).toHaveLength(11);
   });
 
   it("agrees with the domain isListable() rule for every product", async () => {
@@ -155,7 +155,13 @@ describe("listProducts scopes", () => {
   it("upcoming lists coming-soon and preorder products by release date", async () => {
     const listed = await skus({ scope: "upcoming", sort: "release" });
 
-    expect(listed.sort()).toEqual(["UPCOMING-BB-EN", "UPCOMING-ETB-EN"]);
+    // Release order: the bundle releases 30 days after the other two.
+    expect(listed[2]).toBe("UPCOMING-BNDL-EN");
+    expect([...listed].sort()).toEqual([
+      "UPCOMING-BB-EN",
+      "UPCOMING-BNDL-EN",
+      "UPCOMING-ETB-EN",
+    ]);
   });
 
   it("featured lists admin-featured products only", async () => {
@@ -187,11 +193,11 @@ describe("listProducts sorting and paging", () => {
     const page3 = await listProducts(db, query({ pageSize: 4, page: 3 }));
     const beyond = await listProducts(db, query({ pageSize: 4, page: 9 }));
 
-    expect(page1.total).toBe(10);
+    expect(page1.total).toBe(11);
     expect(page1.items).toHaveLength(4);
-    expect(page3.items).toHaveLength(2);
+    expect(page3.items).toHaveLength(3);
     expect(page1.items.map((i) => i.id)).not.toContain(page3.items[0]!.id);
-    expect(beyond).toEqual({ items: [], total: 10 });
+    expect(beyond).toEqual({ items: [], total: 11 });
   });
 });
 

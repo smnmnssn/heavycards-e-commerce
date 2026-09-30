@@ -22,7 +22,7 @@ describe("development seed", () => {
     expect(first).toEqual({
       categories: 6,
       pokemonSets: 7,
-      products: 12,
+      products: 13,
       orders: 5,
       reviews: 4,
       adminUsers: 2,

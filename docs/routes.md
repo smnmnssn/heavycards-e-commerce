@@ -94,11 +94,12 @@ Swedish characters are transliterated in slugs (å/ä → a, ö → o).
 
 ## Admin and API
 
-| Route                 | Purpose                             | Milestone |
-| --------------------- | ----------------------------------- | --------- |
-| `/admin/**`           | Admin application (never indexable) | 6+        |
-| `/api/health`         | Health check                        | 1–2       |
-| `/api/stripe/webhook` | Stripe webhook                      | 9         |
+| Route                 | Purpose                                             | Milestone |
+| --------------------- | --------------------------------------------------- | --------- |
+| `/admin/**`           | Admin application (never indexable)                 | 6+        |
+| `/api/health`         | Health check                                        | 1–2       |
+| `/api/cart`           | POST: current data for cart product IDs (read-only) | 5         |
+| `/api/stripe/webhook` | Stripe webhook                                      | 9         |
 
 `/admin/**` and `/api/**` send `X-Robots-Tag: noindex, nofollow` (next.config.ts).
 

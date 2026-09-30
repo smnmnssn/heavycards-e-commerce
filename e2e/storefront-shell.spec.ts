@@ -52,7 +52,7 @@ test.describe("shell on every page", () => {
     await expect(page.getByRole("main")).toBeFocused();
   });
 
-  test("cart button is present, empty and never opens anything by itself", async ({
+  test("the empty cart opens only when the cart button is clicked", async ({
     page,
   }) => {
     await page.goto("/");
@@ -60,8 +60,12 @@ test.describe("shell on every page", () => {
 
     await expect(cart).toBeVisible();
     await expect(page.getByTestId("cart-badge")).toHaveCount(0);
-    await cart.click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
+
+    await cart.click();
+    const drawer = page.getByRole("dialog", { name: /Din kundvagn/ });
+    await expect(drawer).toBeVisible();
+    await expect(drawer).toContainText("Din kundvagn är tom.");
   });
 
   test("footer carries information links and the independence notice", async ({

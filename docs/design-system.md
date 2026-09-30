@@ -196,12 +196,19 @@ client JavaScript.
 
 ## Logo
 
-- The official logo is **not in the repository yet**.
-- `Logo` renders a temporary text wordmark ("HEAVYCARDS" in expanded Archivo).
-  It is intentionally not a drawn or invented logo.
-- To install the real asset, place it at `public/brand/heavycards-logo.svg`
-  (or a high-resolution PNG/WebP) and set `brandAssets.logo` in
-  `src/lib/config/brand.ts` with its intrinsic width and height.
+- The official mark is `public/brand/heavycards-mark.svg`: one path with
+  `fill="currentColor"` (viewBox 559 × 684). It is configured in
+  `src/lib/config/brand.ts` (`brandAssets.mark`).
+- `BrandMark` renders it as a CSS mask over `background-color: currentColor`,
+  so the **same file** is used everywhere: black in the header, white in the
+  inverted footer, and faint inside image placeholders. There are no raster
+  variants and no `filter: invert()`. The intrinsic aspect ratio is set, so
+  nothing shifts while it loads.
+- In forced-colors mode (Windows High Contrast), background colours are
+  overridden, so `.brand-mark` is pinned to the system `CanvasText` colour.
+- `Logo` is the mark linking home; its accessible name is
+  "HeavyCards – till startsidan". Never redraw or recolour the mark beyond
+  `currentColor`.
 
 ## Catalog components (Milestone 4)
 
@@ -213,9 +220,9 @@ client JavaScript.
 | `EmptyState`                                        | Calm bordered message with an optional action.                                                                                    |
 | `CategoryTiles`, `SetList`                          | Taxonomy navigation with product counts; empty categories and sets are hidden.                                                    |
 | `ProductGallery`                                    | Fixed square frame (no layout shift). Server-rendered for 0–1 images; a client thumbnail gallery only for 2+ images.              |
-| `ProductImagePlaceholder`                           | Neutral grey square with the text wordmark, used while products have no photos. Decorative (`aria-hidden`).                       |
+| `ProductImagePlaceholder`, `ImagePlaceholder`       | Neutral grey square with a faint brand mark, used while products have no photos. Decorative (`aria-hidden`).                      |
 | `PurchasePanel`, `AvailabilityStatus`               | Availability (filled dot = available, ring = not), release date and preorder terms. The purchase control is a slot (`action`).    |
-| `PurchaseActionPlaceholder`                         | Disabled "Lägg i kundvagn"/"Förbeställ" with the reason "Köp i webbutiken öppnar snart." Milestone 5 replaces it.                 |
+| `PurchaseAction`                                    | Add-to-cart for purchasable products, a disabled state label when sold out, nothing when not orderable yet (Milestone 5).         |
 | `StarRating`, `ProductReviews`, `ReviewSummaryLink` | Monochrome stars filled to the exact average; the accessible text states the rating in words. Approved reviews only.              |
 | `ListingSkeleton`                                   | Loading state for `/nyheter`, `/kommande` and `/sok`.                                                                             |
 
@@ -229,3 +236,18 @@ client JavaScript.
 
 Cards show at most two badges. Unavailable products have dimmed images, and
 future releases get a "Släpps 14 november 2026" note under the price.
+
+## Cart components (Milestone 5)
+
+| Component         | Notes                                                                                                                                                                                                                                    |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CartProvider`    | Client boundary in `StoreShell`: server-rendered children pass through unchanged. Renders the drawer and a polite `role="status"` announcer once.                                                                                        |
+| `CartTrigger`     | Header button: live unit count (`aria-label` "Kundvagn, 3 artiklar"; badge caps at "99+"). `aria-haspopup="dialog"` and `aria-expanded`. The only way the drawer opens, apart from the explicit "Visa kundvagnen" in a conflict message. |
+| `AddToCart`       | Quantity stepper plus "Lägg i kundvagn"/"Förbeställ". On success: "✓ Tillagd" for 1.2 s, badge update, icon pulse. Never opens the drawer. Conflicts and limits appear as inline Swedish messages (`role="alert"`/`"status"`).           |
+| `CartDrawer`      | Native modal `<dialog>`, sliding in from the right (`.drawer[data-side="right"]`). 448 px wide from the `sm` breakpoint, viewport width minus 24 px on phones. Header and footer are fixed; the product list scrolls.                    |
+| `QuantityStepper` | Labelled group: "Minska antal", a numeric input (committed on blur/Enter, clamped) and "Öka antal". Buttons are disabled at the limits; all targets are ≥ 44 px.                                                                         |
+
+**Pulse:** `CartButton` takes a `pulseKey`. Every successful add increments
+it, which remounts the icon and replays the 450 ms `cart-pulse` keyframes
+once. The animation is `motion-safe` only and is also disabled by the global
+reduced-motion rule.

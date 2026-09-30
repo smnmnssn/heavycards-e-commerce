@@ -1,4 +1,12 @@
+import { existsSync } from "node:fs";
+
 import { defineConfig, devices } from "@playwright/test";
+
+// Some tests look up seeded product IDs (read-only). Mirror Next.js and
+// prisma.config.ts for local runs; CI provides DATABASE_URL directly.
+if (!process.env.DATABASE_URL && existsSync(".env.local")) {
+  process.loadEnvFile(".env.local");
+}
 
 const isCI = Boolean(process.env.CI);
 const port = Number(process.env.E2E_PORT ?? 3100);
