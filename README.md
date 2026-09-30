@@ -7,6 +7,8 @@ server-side logic. Market: Sweden only, Swedish UI, SEK.
 - **Specification:** [PROJECT.md](PROJECT.md) is the canonical source of requirements.
 - **Architecture decisions:** [docs/architecture.md](docs/architecture.md).
 - **Database design:** [docs/database.md](docs/database.md).
+- **Design system:** [docs/design-system.md](docs/design-system.md).
+- **Routes:** [docs/routes.md](docs/routes.md).
 
 ## Status
 
@@ -14,8 +16,9 @@ server-side logic. Market: Sweden only, Swedish UI, SEK.
 | ------------------------- | ----- |
 | 1 — Repository foundation | Done  |
 | 2 — Database foundation   | Done  |
-| 3 — Storefront design     | Next  |
-| 4–15                      | —     |
+| 3 — Storefront design     | Done  |
+| 4 — Catalog               | Next  |
+| 5–15                      | —     |
 
 Sections below marked _(later milestone)_ are placeholders and are filled in as
 those features land.
@@ -24,16 +27,16 @@ those features land.
 
 Versions are pinned exactly in `package.json`, and `package-lock.json` is committed.
 
-| Area       | Choice                                                                   |
-| ---------- | ------------------------------------------------------------------------ |
-| Runtime    | Node.js 24.x LTS (Vercel default)                                        |
-| Framework  | Next.js 16.3 (App Router, Turbopack), React 19.3, TypeScript 6.0         |
-| Styling    | Tailwind CSS 4.3, shadcn/ui conventions (`components.json`, `cn()`)      |
-| Database   | PostgreSQL 18 (local via Docker), Prisma ORM 7.10 with the `pg` adapter  |
-| Validation | Zod 4                                                                    |
-| Quality    | ESLint 9 (`eslint-config-next`), Prettier 3                              |
-| Tests      | Vitest 5 (unit/domain), Playwright 1.63 (E2E, desktop + mobile Chromium) |
-| Planned    | Stripe Checkout, Resend, Vercel Blob, React Hook Form                    |
+| Area       | Choice                                                                                     |
+| ---------- | ------------------------------------------------------------------------------------------ |
+| Runtime    | Node.js 24.x LTS (Vercel default)                                                          |
+| Framework  | Next.js 16.3 (App Router, Turbopack), React 19.3, TypeScript 6.0                           |
+| Styling    | Tailwind CSS 4.3, Archivo variable font, shadcn/ui conventions (`components.json`, `cn()`) |
+| Database   | PostgreSQL 18 (local via Docker), Prisma ORM 7.10 with the `pg` adapter                    |
+| Validation | Zod 4                                                                                      |
+| Quality    | ESLint 9 (`eslint-config-next`), Prettier 3                                                |
+| Tests      | Vitest 5 (unit/domain/components), Playwright 1.63 + axe (E2E, desktop + mobile Chromium)  |
+| Planned    | Stripe Checkout, Resend, Vercel Blob, React Hook Form                                      |
 
 ## Local setup
 
@@ -147,11 +150,22 @@ public/brand/     official HeavyCards logo goes here (see below)
 docs/             architecture decisions
 ```
 
-## Branding
+## Branding and design
 
-The official HeavyCards logo is **not yet in the repository**. Place it at
-`public/brand/heavycards-logo.*`. Until then the UI uses a temporary text-only
-wordmark. Do not replace or redraw the logo.
+The official HeavyCards logo is **not yet in the repository**. The UI uses a
+temporary text-only wordmark. Do not replace or redraw the logo.
+
+To install it:
+
+1. Place the file at `public/brand/heavycards-logo.svg` (or a high-resolution
+   PNG/WebP).
+2. Set `brandAssets.logo` in `src/lib/config/brand.ts`.
+
+The footer needs a light version for its black background.
+
+The design system (tokens, typography, components, accessibility) is described
+in [docs/design-system.md](docs/design-system.md). In development, open
+http://localhost:3000/designsystem for a visual reference of all primitives.
 
 ## Database, migrations and seed
 

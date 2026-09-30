@@ -88,10 +88,30 @@ const sekFormatter = new Intl.NumberFormat("sv-SE", {
   currency: "SEK",
 });
 
-/** Customer-facing SEK display, e.g. 149900 → "1 499,00 kr". */
+const sekWholeFormatter = new Intl.NumberFormat("sv-SE", {
+  style: "currency",
+  currency: "SEK",
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 0,
+});
+
+/** Exact SEK display with öre, e.g. 149900 → "1 499,00 kr" (receipts, admin). */
 export function formatSek(amount: number): string {
   if (!Number.isInteger(amount)) {
     throw new InvalidAmountError("amount");
   }
   return sekFormatter.format(amount / 100);
+}
+
+/**
+ * Storefront price display: whole kronor without decimals ("1 499 kr"), and
+ * öre only when present ("49,50 kr"). Never rounds: the amount is exact.
+ */
+export function formatPrice(amount: number): string {
+  if (!Number.isInteger(amount)) {
+    throw new InvalidAmountError("amount");
+  }
+  return amount % 100 === 0
+    ? sekWholeFormatter.format(amount / 100)
+    : sekFormatter.format(amount / 100);
 }

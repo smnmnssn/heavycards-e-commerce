@@ -399,6 +399,31 @@ describe("review constraints", () => {
   });
 });
 
+describe("audit log", () => {
+  it("records system actions with a NULL admin, never an empty-string pseudo-ID", async () => {
+    const entry = await db.auditLog.create({
+      data: {
+        action: "MARK_ORDER_PAID",
+        entityType: "Order",
+        entityId: "x",
+      },
+    });
+    expect(entry.adminUserId).toBeNull();
+
+    // admin_user_id is a native uuid column: an empty string cannot be stored.
+    await expect(
+      db.auditLog.create({
+        data: {
+          adminUserId: "",
+          action: "MARK_ORDER_PAID",
+          entityType: "Order",
+          entityId: "x",
+        },
+      }),
+    ).rejects.toThrow();
+  });
+});
+
 describe("administration constraints", () => {
   it("requires normalized lowercase admin emails, unique per person", async () => {
     await expect(

@@ -1,12 +1,26 @@
 import { expect, test } from "@playwright/test";
 
+import { isPendingRoute } from "./pending-routes";
+
 test.describe("smoke", () => {
   test("homepage renders in Swedish without console errors", async ({
     page,
   }) => {
     const consoleErrors: string[] = [];
+    const unexpectedFailures: string[] = [];
     page.on("console", (message) => {
-      if (message.type() === "error") consoleErrors.push(message.text());
+      // Resource failures are checked by URL below; the console text has none.
+      if (
+        message.type() === "error" &&
+        !message.text().startsWith("Failed to load resource")
+      ) {
+        consoleErrors.push(message.text());
+      }
+    });
+    page.on("response", (res) => {
+      if (res.status() >= 400 && !isPendingRoute(res.url())) {
+        unexpectedFailures.push(`${res.status()} ${res.url()}`);
+      }
     });
 
     const response = await page.goto("/");
@@ -20,7 +34,11 @@ test.describe("smoke", () => {
         name: "Förseglade Pokémon TCG-produkter",
       }),
     ).toBeVisible();
+    // Grace period for viewport prefetches (the app never reaches
+    // "networkidle", so wait a fixed, short time instead).
+    await page.waitForTimeout(1_000);
     expect(consoleErrors).toEqual([]);
+    expect(unexpectedFailures).toEqual([]);
   });
 
   test("responses carry baseline security headers", async ({ request }) => {

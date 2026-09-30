@@ -24,7 +24,7 @@ export default defineConfig({
           // Fast, deterministic tests without external services (`npm test`).
           name: "unit",
           environment: "node",
-          include: ["tests/unit/**/*.test.ts"],
+          include: ["tests/unit/**/*.test.{ts,tsx}"],
         },
       },
       {

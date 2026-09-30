@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   InvalidAmountError,
   MAX_AMOUNT,
+  formatPrice,
   formatSek,
   isValidAmount,
   multiplyAmount,
@@ -96,5 +97,21 @@ describe("formatSek", () => {
 
   it("refuses non-integer input", () => {
     expect(() => formatSek(14.99)).toThrow(InvalidAmountError);
+  });
+});
+
+describe("formatPrice", () => {
+  it("shows whole kronor without decimals", () => {
+    expect(normalizeSpaces(formatPrice(149_900))).toBe("1 499 kr");
+    expect(normalizeSpaces(formatPrice(6_900))).toBe("69 kr");
+  });
+
+  it("keeps öre when present instead of rounding", () => {
+    expect(normalizeSpaces(formatPrice(74_950))).toBe("749,50 kr");
+    expect(normalizeSpaces(formatPrice(1))).toBe("0,01 kr");
+  });
+
+  it("refuses non-integer input", () => {
+    expect(() => formatPrice(149.5)).toThrow(InvalidAmountError);
   });
 });

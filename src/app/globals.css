@@ -1,19 +1,27 @@
 @import "tailwindcss";
 
 /*
- * Design tokens follow the shadcn/ui variable contract so generated components
- * work unchanged. Values are a neutral monochrome baseline; the full HeavyCards
- * visual system (typography, spacing, motion) is defined in Milestone 3.
+ * HeavyCards design tokens.
+ *
+ * Monochrome by design: the site chrome is black, white and neutral grey so
+ * that product photography provides the colour (PROJECT.md §7). Variable names
+ * follow the shadcn/ui contract, so generated components work unchanged.
+ *
+ * Contrast (WCAG 2.2): body text 19.8:1, muted text ≥ 5.6:1 on every light
+ * surface, input borders ≥ 3.4:1 (non-text contrast), and the same guarantees
+ * on inverted (black) surfaces. See docs/design-system.md.
  */
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
   --color-primary-foreground: var(--primary-foreground);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
@@ -25,45 +33,272 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
+
+  --font-sans: var(--font-archivo), ui-sans-serif, system-ui, sans-serif;
+
+  --radius-sm: calc(var(--radius) * 0.5);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) * 2);
+}
+
+@theme {
+  /* Layout widths */
+  --container-page: 90rem; /* 1440px */
+  --container-prose: 42rem;
+
+  /* Motion: short and calm. Everything respects prefers-reduced-motion. */
+  --ease-out-soft: cubic-bezier(0.2, 0, 0, 1);
+  --animate-cart-pulse: cart-pulse 450ms var(--ease-out-soft);
+
+  @keyframes cart-pulse {
+    0% {
+      transform: scale(1);
+    }
+    40% {
+      transform: scale(1.14);
+    }
+    100% {
+      transform: scale(1);
+    }
+  }
 }
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.145 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.45 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.145 0 0);
-  /* Restrained rounding per the brand direction (PROJECT.md §7). */
-  --radius: 0.25rem;
+  --background: #ffffff;
+  --foreground: #0a0a0a;
+  /* Quiet fill for image wells and alternating sections. */
+  --surface: #f4f4f4;
+  --card: #ffffff;
+  --card-foreground: #0a0a0a;
+  --popover: #ffffff;
+  --popover-foreground: #0a0a0a;
+  --primary: #0a0a0a;
+  --primary-hover: #262626;
+  --primary-foreground: #ffffff;
+  --secondary: #efefef;
+  --secondary-foreground: #0a0a0a;
+  --muted: #efefef;
+  --muted-foreground: #5e5e5e;
+  --accent: #efefef;
+  --accent-foreground: #0a0a0a;
+  /* Reserved for errors; never used as decoration. */
+  --destructive: #b42318;
+  --border: #e4e4e4;
+  --input: #8a8a8a;
+  --ring: #0a0a0a;
+  /* Restrained corners: premium retail, not rounded SaaS cards. */
+  --radius: 0.125rem;
+}
+
+/*
+ * Inverted surface (black background, white text), e.g. the footer and dark
+ * hero bands. Every token is redefined, so components inside adapt
+ * automatically, including focus rings and primary buttons.
+ */
+.surface-inverted {
+  --background: #0a0a0a;
+  --foreground: #fafafa;
+  --surface: #161616;
+  --card: #0a0a0a;
+  --card-foreground: #fafafa;
+  --popover: #161616;
+  --popover-foreground: #fafafa;
+  --primary: #fafafa;
+  --primary-hover: #d9d9d9;
+  --primary-foreground: #0a0a0a;
+  --secondary: #1f1f1f;
+  --secondary-foreground: #fafafa;
+  --muted: #1f1f1f;
+  --muted-foreground: #a3a3a3;
+  --accent: #1f1f1f;
+  --accent-foreground: #fafafa;
+  --border: #2a2a2a;
+  --input: #6b6b6b;
+  --ring: #fafafa;
+  background-color: var(--background);
+  color: var(--foreground);
+}
+
+/* ---------------------------------------------------------------------------
+ * Typography roles. One variable typeface (Archivo) covers everything: the
+ * width axis gives the expanded display voice, normal width keeps body text
+ * readable. Sizes are fluid, so headings scale with the viewport instead of
+ * jumping at breakpoints.
+ * ------------------------------------------------------------------------- */
+
+@utility type-display {
+  /* ≈27px at 320px wide, rising linearly to 96px at ~1440px. */
+  font-size: clamp(1.625rem, 0.45rem + 6.2vw, 6rem);
+  line-height: 0.95;
+  letter-spacing: -0.015em;
+  font-weight: 800;
+  font-stretch: 125%;
+  text-transform: uppercase;
+  text-wrap: balance;
+  /* Break only a word that cannot fit at all (long data-driven titles);
+     no auto-hyphenation, which would split words like "Pokémon". */
+  overflow-wrap: break-word;
+}
+
+@utility type-h1 {
+  font-size: clamp(2rem, 1.45rem + 2.6vw, 3.5rem);
+  line-height: 1;
+  letter-spacing: -0.01em;
+  font-weight: 800;
+  font-stretch: 118%;
+  text-transform: uppercase;
+  text-wrap: balance;
+  overflow-wrap: break-word;
+}
+
+@utility type-h2 {
+  font-size: clamp(1.5rem, 1.2rem + 1.4vw, 2.375rem);
+  line-height: 1.05;
+  letter-spacing: -0.005em;
+  font-weight: 750;
+  font-stretch: 112%;
+  text-transform: uppercase;
+  text-wrap: balance;
+}
+
+@utility type-h3 {
+  font-size: 1.125rem;
+  line-height: 1.3;
+  font-weight: 650;
+}
+
+@utility type-lead {
+  font-size: clamp(1.0625rem, 0.98rem + 0.4vw, 1.25rem);
+  line-height: 1.55;
+}
+
+/* Small uppercase label above headings and in navigation. */
+@utility type-eyebrow {
+  font-size: 0.75rem;
+  line-height: 1rem;
+  letter-spacing: 0.16em;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+@utility type-nav {
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  text-transform: uppercase;
 }
 
 @layer base {
+  html {
+    /* Opening a modal (menu, later the cart drawer) must not shift the page. */
+    scrollbar-gutter: stable;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  /* Modal dialogs lock page scrolling while open. */
+  html:has(dialog[open]) {
+    overflow: hidden;
+  }
+
   * {
     @apply border-border;
   }
 
   body {
-    @apply bg-background text-foreground antialiased;
+    @apply bg-background font-sans text-base/relaxed text-foreground antialiased;
+    font-feature-settings: "kern";
   }
 
   :focus-visible {
     @apply outline-2 outline-offset-2 outline-ring;
+  }
+
+  ::selection {
+    @apply bg-foreground text-background;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  /*
+   * Long-form text (information and legal pages). Deliberately small instead
+   * of a typography plugin dependency.
+   */
+  .prose-store {
+    @apply max-w-(--container-prose) text-base/relaxed;
+  }
+  .prose-store > * + * {
+    @apply mt-5;
+  }
+  .prose-store h2 {
+    @apply mt-12 text-xl font-bold;
+  }
+  .prose-store h3 {
+    @apply mt-8 text-lg font-semibold;
+  }
+  .prose-store a {
+    @apply font-medium underline underline-offset-4 hover:decoration-2;
+  }
+  .prose-store ul {
+    @apply list-disc pl-5;
+  }
+  .prose-store li + li {
+    @apply mt-2;
+  }
+
+  /*
+   * Slide-in panel built on the native <dialog> element (mobile menu, later
+   * the cart drawer). Enter and exit animate where the browser supports
+   * transitioning `display`/`overlay`; elsewhere the panel simply appears.
+   */
+  .drawer {
+    @apply fixed inset-y-0 m-0 h-dvh max-h-dvh w-[min(24rem,calc(100vw-3rem))] max-w-none bg-background p-0 text-foreground;
+    transition:
+      translate 280ms var(--ease-out-soft),
+      overlay 280ms allow-discrete,
+      display 280ms allow-discrete;
+  }
+  .drawer[data-side="left"] {
+    @apply right-auto left-0 -translate-x-full;
+  }
+  .drawer[data-side="right"] {
+    @apply right-0 left-auto translate-x-full;
+  }
+  .drawer[open] {
+    @apply translate-x-0;
+  }
+  @starting-style {
+    .drawer[data-side="left"][open] {
+      @apply -translate-x-full;
+    }
+    .drawer[data-side="right"][open] {
+      @apply translate-x-full;
+    }
+  }
+  .drawer::backdrop {
+    background-color: rgb(10 10 10 / 0);
+    transition:
+      background-color 280ms var(--ease-out-soft),
+      overlay 280ms allow-discrete,
+      display 280ms allow-discrete;
+  }
+  .drawer[open]::backdrop {
+    background-color: rgb(10 10 10 / 0.45);
+  }
+  @starting-style {
+    .drawer[open]::backdrop {
+      background-color: rgb(10 10 10 / 0);
+    }
   }
 }

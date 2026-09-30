@@ -160,3 +160,58 @@ when the database is unreachable. It exposes no error details.
   currently still run, and a clean `npm ci` was verified to produce a working
   Prisma setup. If npm starts enforcing `allowScripts`, approve `@prisma/engines`
   and `prisma`.
+
+## Milestone 3 — Storefront design foundation (2026-09-30)
+
+The design system is documented in [design-system.md](design-system.md) and
+the route map in [routes.md](routes.md). This section records the decisions.
+
+### Dependencies
+
+- **Added:** only `@axe-core/playwright` 4.13.0 (dev), for automated WCAG
+  checks in E2E.
+- **Not added:**
+  - no icon library: nine hand-drawn SVG icons;
+  - no animation library: CSS transitions and one keyframe;
+  - no headless UI or Radix dependency: the native `<dialog>` handles the
+    mobile menu;
+  - no `class-variance-authority`: variant maps in plain TypeScript;
+  - no typography plugin: a small `.prose-store` component class.
+
+### Font
+
+- One variable font, Archivo (weight and width axes), self-hosted via
+  `next/font/google`.
+- The file is downloaded at build time and served from our own origin, so
+  there are no runtime requests to Google (a GDPR consideration).
+- `next/font` also sizes the fallback font to avoid layout shift.
+
+### TypeScript target
+
+- Unchanged since Milestone 2 (ES2023).
+- `tests/unit` now also accepts `.test.tsx`. Components are unit-tested by
+  rendering them to static HTML in Node, with no jsdom dependency.
+
+### Routes and pending links
+
+- The navigation links to `/nyheter`, `/pokemon-tcg`, `/kommande` and `/sok`,
+  which Milestone 4 implements. Until then they return the Swedish 404 page.
+- Next.js viewport prefetching logs 404s for them. `e2e/pending-routes.ts` is
+  the explicit, temporary allowlist the smoke test tolerates; Milestone 4 must
+  empty it.
+- Information and legal routes exist as `noindex` placeholders pending the
+  owner's content and legal review.
+
+### 404 page inside the shell
+
+- Unmatched URLs render the root `not-found.tsx` outside the `(store)` layout,
+  so it wraps itself in `StoreShell`.
+- Admin (Milestone 6+) has its own layout. Unmatched admin URLs will still
+  show the storefront 404 page, which is acceptable because it exposes nothing.
+
+### Database check
+
+- `AuditLog.adminUserId` is a nullable `uuid` foreign key, so system events are
+  stored as `NULL`. An empty-string pseudo-ID is impossible, because
+  PostgreSQL cannot store `''` in a `uuid` column.
+- No schema change was needed. A DB test now asserts both properties.
