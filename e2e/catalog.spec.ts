@@ -55,10 +55,41 @@ test.describe("homepage", () => {
     await expect(main).not.toContainText("Mega Evolution Booster Box");
     await expect(main).not.toContainText("151 Booster Bundle");
   });
+
+  test("shows the trust banner before the branded hero", async ({ page }) => {
+    await page.goto("/");
+    const main = page.getByRole("main");
+    const trust = main.getByRole("region", { name: "Därför HeavyCards" });
+    const hero = main.locator('[data-section="hero"]');
+
+    for (const text of [
+      "Förseglat och originalförpackat",
+      "Skickas med PostNord",
+      "Säker betalning",
+    ]) {
+      await expect(trust).toContainText(text);
+    }
+    // Document order: header → trust banner → hero → other sections.
+    const order = await main.evaluate((el) =>
+      [...el.children].map((child) => child.getAttribute("data-section")),
+    );
+    expect(order.slice(0, 2)).toEqual(["trygghet", "hero"]);
+
+    // The h1 is still the first heading on the page.
+    await expect(page.getByRole("heading").first()).toHaveText(
+      "Förseglade Pokémon TCG-produkter",
+    );
+
+    // Brand label as text, mark as decorative only (no extra announcements).
+    await expect(hero.getByText("HeavyCards", { exact: true })).toBeVisible();
+    const marks = hero.locator(".brand-mark");
+    await expect(marks.first()).toHaveAttribute("aria-hidden", "true");
+    await expect(marks.filter({ visible: true })).toHaveCount(1);
+  });
 });
 
 test.describe("Pokémon TCG landing page", () => {
-  test("lists categories, sets and every listable product", async ({
+  test("lists categories and every listable product, without a set list", async ({
     page,
   }) => {
     await page.goto("/pokemon-tcg");
@@ -69,9 +100,13 @@ test.describe("Pokémon TCG landing page", () => {
     await expect(
       page.getByRole("region", { name: "Kategorier" }),
     ).toBeVisible();
+    // Sets are reached through the filter and product pages instead.
+    await expect(page.getByRole("region", { name: "Pokémon-set" })).toHaveCount(
+      0,
+    );
     await expect(
-      page.getByRole("region", { name: "Pokémon-set" }),
-    ).toBeVisible();
+      page.getByRole("main").locator('a[href^="/set/"]'),
+    ).toHaveCount(0);
     await expect(page.getByText("11 produkter")).toBeVisible();
     const names = await cardNames(page);
     expect(names).toContain("Kommande set Booster Box");
@@ -103,13 +138,29 @@ test.describe("Pokémon TCG landing page", () => {
     await expect(page).toHaveTitle(/Booster Boxes/);
   });
 
-  test("set links lead to a set page with release information", async ({
-    page,
-  }) => {
+  test("the set filter remains and narrows the listing", async ({ page }) => {
     await page.goto("/pokemon-tcg");
+    const filters = page.getByRole("form", { name: "Filtrera och sortera" });
+
+    await filters
+      .getByLabel("Set", { exact: true })
+      .selectOption("destined-rivals");
+    await filters.getByRole("button", { name: "Visa" }).click();
+
+    await expect(page).toHaveURL(/set=destined-rivals/);
+    expect((await cardNames(page)).sort()).toEqual([
+      "Destined Rivals Booster Box",
+      "Destined Rivals Booster Pack",
+      "Destined Rivals Elite Trainer Box",
+    ]);
+  });
+
+  test("set pages stay reachable through internal links", async ({ page }) => {
+    await page.goto("/pokemon-tcg/destined-rivals-booster-box");
     await page
-      .getByRole("region", { name: "Pokémon-set" })
-      .getByRole("link", { name: /Destined Rivals/ })
+      .getByRole("main")
+      .getByRole("link", { name: "Destined Rivals", exact: true })
+      .first()
       .click();
 
     await expect(page).toHaveURL("/set/destined-rivals");

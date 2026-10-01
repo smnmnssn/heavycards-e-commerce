@@ -112,12 +112,34 @@ test.describe("shell on every page", () => {
   });
 
   test("layout never scrolls horizontally", async ({ page }) => {
-    for (const path of ["/", "/om-oss"]) {
+    for (const path of ["/", "/om-oss", "/pokemon-tcg"]) {
       await page.goto(path);
       const overflow = await page.evaluate(
         () => document.documentElement.scrollWidth - window.innerWidth,
       );
       expect(overflow).toBeLessThanOrEqual(0);
+    }
+  });
+
+  test("the homepage fits narrow phones", async ({ page }) => {
+    for (const width of [320, 390]) {
+      await page.setViewportSize({ width, height: 800 });
+      await page.goto("/");
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth - window.innerWidth,
+      );
+      expect(overflow, `overflow at ${width}px`).toBeLessThanOrEqual(0);
+      await expect(
+        page.getByRole("link", { name: "Utforska sortimentet" }),
+      ).toBeVisible();
+
+      // The trust banner is a slim strip on phones, so the hero headline is
+      // visible without scrolling.
+      const trustHeight = await page
+        .locator('[data-section="trygghet"]')
+        .evaluate((el) => el.getBoundingClientRect().height);
+      expect(trustHeight, `trust banner at ${width}px`).toBeLessThan(140);
+      await expect(page.getByRole("heading", { level: 1 })).toBeInViewport();
     }
   });
 });

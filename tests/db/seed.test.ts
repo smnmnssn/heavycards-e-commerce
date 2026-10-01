@@ -30,6 +30,19 @@ describe("development seed", () => {
     expect(await db.auditLog.count()).toBe(2);
   });
 
+  it("gives every product exactly one example image, even after reseeding", async () => {
+    const products = await db.product.findMany({
+      select: { images: { select: { url: true, width: true, height: true } } },
+    });
+
+    expect(products.length).toBeGreaterThan(0);
+    for (const { images } of products) {
+      expect(images).toEqual([
+        { url: "/brand/product-example-img.webp", width: 1920, height: 1920 },
+      ]);
+    }
+  });
+
   it("creates a development OWNER without credentials", async () => {
     const owners = await db.adminUser.findMany({ where: { role: "OWNER" } });
 

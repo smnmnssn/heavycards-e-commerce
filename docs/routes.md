@@ -9,17 +9,17 @@ since published URLs need permanent redirects once live.
 
 All storefront routes below exist as of Milestone 4 (except `/review/[token]`).
 
-| Route                        | Page                                            | Rendering | Indexable                |
-| ---------------------------- | ----------------------------------------------- | --------- | ------------------------ |
-| `/`                          | Homepage with database-backed sections          | ISR 60 s  | yes                      |
-| `/pokemon-tcg`               | Landing page: categories, sets, full listing    | dynamic   | yes (unfiltered)         |
-| `/pokemon-tcg/[productSlug]` | Product page                                    | ISR 60 s  | yes; archived: `noindex` |
-| `/kategori/[slug]`           | Category landing page                           | dynamic   | yes (unfiltered)         |
-| `/set/[slug]`                | Pokémon set landing page                        | dynamic   | yes (unfiltered)         |
-| `/nyheter`                   | ACTIVE products published in the last 60 days   | dynamic   | yes                      |
-| `/kommande`                  | COMING_SOON, preorders and future release dates | dynamic   | yes                      |
-| `/sok?q=…`                   | Search results                                  | dynamic   | no                       |
-| `/review/[token]`            | Secure review page (Milestone 11)               | —         | no                       |
+| Route                        | Page                                                | Rendering | Indexable                |
+| ---------------------------- | --------------------------------------------------- | --------- | ------------------------ |
+| `/`                          | Homepage with database-backed sections              | ISR 60 s  | yes                      |
+| `/pokemon-tcg`               | Landing page: categories, full listing (set filter) | dynamic   | yes (unfiltered)         |
+| `/pokemon-tcg/[productSlug]` | Product page                                        | ISR 60 s  | yes; archived: `noindex` |
+| `/kategori/[slug]`           | Category landing page                               | dynamic   | yes (unfiltered)         |
+| `/set/[slug]`                | Pokémon set landing page                            | dynamic   | yes (unfiltered)         |
+| `/nyheter`                   | ACTIVE products published in the last 60 days       | dynamic   | yes                      |
+| `/kommande`                  | COMING_SOON, preorders and future release dates     | dynamic   | yes                      |
+| `/sok?q=…`                   | Search results                                      | dynamic   | no                       |
+| `/review/[token]`            | Secure review page (Milestone 11)                   | —         | no                       |
 
 Unknown product, category and set slugs, draft or unpublished products, and
 page numbers beyond the last page return HTTP 404 with the store's 404 page.

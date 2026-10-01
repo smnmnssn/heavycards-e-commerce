@@ -212,19 +212,19 @@ client JavaScript.
 
 ## Catalog components (Milestone 4)
 
-| Component                                           | Notes                                                                                                                             |
-| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `ProductListing`                                    | Grid, pagination and empty state. The first four cards get image priority (LCP).                                                  |
-| `CatalogToolbar`                                    | GET form with labelled selects (category, set, availability, sort) and a "Visa" button. Nothing navigates on change (WCAG 3.2.2). |
-| `Pagination`                                        | Previous/next links with `rel`, plus "Sida X av Y".                                                                               |
-| `EmptyState`                                        | Calm bordered message with an optional action.                                                                                    |
-| `CategoryTiles`, `SetList`                          | Taxonomy navigation with product counts; empty categories and sets are hidden.                                                    |
-| `ProductGallery`                                    | Fixed square frame (no layout shift). Server-rendered for 0–1 images; a client thumbnail gallery only for 2+ images.              |
-| `ProductImagePlaceholder`, `ImagePlaceholder`       | Neutral grey square with a faint brand mark, used while products have no photos. Decorative (`aria-hidden`).                      |
-| `PurchasePanel`, `AvailabilityStatus`               | Availability (filled dot = available, ring = not), release date and preorder terms. The purchase control is a slot (`action`).    |
-| `PurchaseAction`                                    | Add-to-cart for purchasable products, a disabled state label when sold out, nothing when not orderable yet (Milestone 5).         |
-| `StarRating`, `ProductReviews`, `ReviewSummaryLink` | Monochrome stars filled to the exact average; the accessible text states the rating in words. Approved reviews only.              |
-| `ListingSkeleton`                                   | Loading state for `/nyheter`, `/kommande` and `/sok`.                                                                             |
+| Component                                           | Notes                                                                                                                                            |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ProductListing`                                    | Grid, pagination and empty state. The first four cards get image priority (LCP).                                                                 |
+| `CatalogToolbar`                                    | GET form with labelled selects (category, set, availability, sort) and a "Visa" button. Nothing navigates on change (WCAG 3.2.2).                |
+| `Pagination`                                        | Previous/next links with `rel`, plus "Sida X av Y".                                                                                              |
+| `EmptyState`                                        | Calm bordered message with an optional action.                                                                                                   |
+| `CategoryTiles`                                     | Category navigation with product counts; empty categories are hidden. Sets are reached through the set filter, set pages and product-page links. |
+| `ProductGallery`                                    | Fixed square frame (no layout shift). Server-rendered for 0–1 images; a client thumbnail gallery only for 2+ images.                             |
+| `ProductImagePlaceholder`, `ImagePlaceholder`       | Neutral grey square with a faint brand mark, used while products have no photos. Decorative (`aria-hidden`).                                     |
+| `PurchasePanel`, `AvailabilityStatus`               | Availability (filled dot = available, ring = not), release date and preorder terms. The purchase control is a slot (`action`).                   |
+| `PurchaseAction`                                    | Add-to-cart for purchasable products, a disabled state label when sold out, nothing when not orderable yet (Milestone 5).                        |
+| `StarRating`, `ProductReviews`, `ReviewSummaryLink` | Monochrome stars filled to the exact average; the accessible text states the rating in words. Approved reviews only.                             |
+| `ListingSkeleton`                                   | Loading state for `/nyheter`, `/kommande` and `/sok`.                                                                                            |
 
 **Product card badges:**
 

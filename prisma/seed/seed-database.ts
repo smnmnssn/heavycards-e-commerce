@@ -20,6 +20,13 @@ import { calculateShippingAmount } from "@/server/domain/shipping";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** Shared development product photo (public/brand/product-example-img.webp). */
+const EXAMPLE_PRODUCT_IMAGE = {
+  url: "/brand/product-example-img.webp",
+  width: 1920,
+  height: 1920,
+} as const;
+
 /** Midnight UTC, the representation Prisma uses for `@db.Date` columns. */
 const calendarDate = (isoDate: string) => new Date(`${isoDate}T00:00:00Z`);
 
@@ -391,6 +398,27 @@ export async function seedDatabase(
           update: data,
         });
         products[row.sku] = product;
+      }
+
+      // --- Example product images ----------------------------------------------
+      // Development stand-in until real photos are uploaded (Milestone 7): one
+      // shared example image per product, stored as ordinary ProductImage rows
+      // so every storefront image path (cards, gallery, cart, JSON-LD) is
+      // exercised. Alt text is left blank, so the product name is used.
+      for (const row of productRows) {
+        const storageKey = `seed/product-example-img/${row.sku}`;
+        const image = {
+          productId: products[row.sku]!.id,
+          url: EXAMPLE_PRODUCT_IMAGE.url,
+          width: EXAMPLE_PRODUCT_IMAGE.width,
+          height: EXAMPLE_PRODUCT_IMAGE.height,
+          position: 0,
+        };
+        await tx.productImage.upsert({
+          where: { storageKey },
+          create: { storageKey, ...image },
+          update: image,
+        });
       }
 
       // --- Orders --------------------------------------------------------------

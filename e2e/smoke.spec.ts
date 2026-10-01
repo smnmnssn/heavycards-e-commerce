@@ -63,7 +63,7 @@ test.describe("smoke", () => {
     expect(await response.json()).toEqual({ status: "ok" });
   });
 
-  test("admin paths are not indexable even before the admin exists", async ({
+  test("admin paths are not indexable even bef.ore the admin exists", async ({
     request,
   }) => {
     const response = await request.get("/admin");

@@ -6,7 +6,7 @@ import { CatalogToolbar } from "@/components/store/catalog-toolbar";
 import { PageHeader } from "@/components/store/headings";
 import { JsonLdScript } from "@/components/store/json-ld";
 import { ProductListing } from "@/components/store/product-listing";
-import { CategoryTiles, SetList } from "@/components/store/taxonomy-links";
+import { CategoryTiles } from "@/components/store/taxonomy-links";
 import { ButtonLink } from "@/components/ui/button";
 import { Container } from "@/components/ui/container";
 import { env } from "@/lib/env/server";
@@ -77,12 +77,6 @@ export default async function PokemonTcgPage({
               Kategorier
             </h2>
             <CategoryTiles categories={options.categories} />
-          </section>
-          <section aria-labelledby="set">
-            <h2 id="set" className="mb-4 type-eyebrow">
-              Pokémon-set
-            </h2>
-            <SetList sets={options.sets} />
           </section>
         </div>
       )}

@@ -1,8 +1,7 @@
 import Link from "next/link";
 
 import { ArrowRightIcon } from "@/components/ui/icons";
-import { formatIsoDate } from "@/lib/dates";
-import type { SetLink, TaxonomyLink } from "@/server/data/catalog-queries";
+import type { TaxonomyLink } from "@/server/data/catalog-queries";
 
 const countLabel = (count: number) =>
   count === 1 ? "1 produkt" : `${count} produkter`;
@@ -29,38 +28,6 @@ export function CategoryTiles({
             </span>
             <span className="flex items-center justify-between text-sm text-muted-foreground">
               {countLabel(category.productCount)}
-              <ArrowRightIcon className="size-4 text-foreground transition-transform duration-200 group-hover:translate-x-1" />
-            </span>
-          </Link>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-/** Pokémon set list with release dates. Only sets with products. */
-export function SetList({ sets }: { sets: readonly SetLink[] }) {
-  const visible = sets.filter((set) => set.productCount > 0);
-  if (visible.length === 0) return null;
-
-  return (
-    <ul className="divide-y divide-border border-y border-border">
-      {visible.map((set) => (
-        <li key={set.slug}>
-          <Link
-            href={`/set/${set.slug}`}
-            className="group flex min-h-16 items-center justify-between gap-4 py-3 transition-colors hover:bg-surface sm:px-3"
-          >
-            <span>
-              <span className="block font-semibold">{set.name}</span>
-              {set.releaseDate && (
-                <span className="text-sm text-muted-foreground">
-                  {formatIsoDate(set.releaseDate)}
-                </span>
-              )}
-            </span>
-            <span className="flex shrink-0 items-center gap-3 text-sm text-muted-foreground">
-              {countLabel(set.productCount)}
               <ArrowRightIcon className="size-4 text-foreground transition-transform duration-200 group-hover:translate-x-1" />
             </span>
           </Link>

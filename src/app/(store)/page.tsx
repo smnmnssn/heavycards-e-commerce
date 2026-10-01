@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 
+import { BrandMark } from "@/components/store/brand-mark";
 import { SectionHeading } from "@/components/store/headings";
 import {
   ProductCard,
@@ -78,45 +79,74 @@ export default async function HomePage() {
 
   return (
     <>
-      <Section tone="inverted" className="overflow-hidden">
+      {/* Trust banner, directly under the header. It precedes the page's h1,
+          so it is a labelled region with plain-text titles (no headings).
+          Below lg it is a slim wrapping strip (icon + title; the supporting
+          sentence stays available to screen readers). From lg up it is the
+          original three-column layout. */}
+      <Section
+        spacing="compact"
+        className="border-b border-border py-3 sm:py-3 lg:py-12"
+        aria-label="Därför HeavyCards"
+        data-section="trygghet"
+      >
         <Container>
-          <div className="max-w-5xl py-6 sm:py-10 lg:py-16">
-            <p className="type-eyebrow text-muted-foreground">
-              Pokémon TCG · Sverige
-            </p>
-            <h1 className="mt-6 type-display">
-              Förseglade Pokémon TCG-produkter
-            </h1>
-            <p className="mt-6 max-w-xl type-lead text-muted-foreground sm:mt-8">
-              Booster boxes, Elite Trainer Boxes, booster packs och mer, noga
-              utvalt för samlare och spelare.
-            </p>
-            <div className="mt-10 flex flex-col gap-3 sm:flex-row">
-              <ButtonLink href="/pokemon-tcg" size="lg">
-                Utforska sortimentet
-              </ButtonLink>
-              <ButtonLink href="/kommande" size="lg" variant="secondary">
-                Kommande släpp
-              </ButtonLink>
-            </div>
-          </div>
-        </Container>
-      </Section>
-
-      <Section spacing="compact" className="border-b border-border">
-        <Container>
-          <h2 className="sr-only">Därför HeavyCards</h2>
-          <ul className="grid gap-8 sm:grid-cols-3 sm:gap-6 lg:gap-12">
+          <ul className="flex flex-wrap justify-center gap-x-5 gap-y-1.5 lg:grid lg:grid-cols-3 lg:gap-12">
             {promises.map(({ icon: Icon, title, text }) => (
-              <li key={title} className="flex gap-4">
-                <Icon className="mt-0.5 size-6 shrink-0" />
+              <li
+                key={title}
+                className="flex items-center gap-1.5 lg:items-stretch lg:gap-4"
+              >
+                <Icon className="size-4 shrink-0 lg:mt-0.5 lg:size-6" />
                 <div>
-                  <h3 className="type-h3 text-base">{title}</h3>
-                  <p className="mt-1 text-sm text-muted-foreground">{text}</p>
+                  <p className="text-[0.8125rem] font-semibold lg:type-h3 lg:text-base">
+                    {title}
+                  </p>
+                  <p className="sr-only lg:not-sr-only lg:mt-1 lg:text-sm lg:text-muted-foreground">
+                    {text}
+                  </p>
                 </div>
               </li>
             ))}
           </ul>
+        </Container>
+      </Section>
+
+      {/* Hero padding is ~10% tighter than the default section rhythm. */}
+      <Section
+        tone="inverted"
+        className="overflow-hidden py-12 sm:py-19 lg:py-33"
+        data-section="hero"
+      >
+        <Container>
+          <div className="grid items-center gap-x-16 lg:grid-cols-[minmax(0,1fr)_auto]">
+            <div className="max-w-5xl">
+              <div className="flex items-center justify-between gap-6">
+                <p className="type-eyebrow text-foreground">
+                  {siteConfig.brandName}
+                </p>
+                {/* Small mark beside the brand label below lg; the large one
+                    sits in its own column on desktop. Both are decorative. */}
+                <BrandMark className="h-10 sm:h-12 lg:hidden" />
+              </div>
+              <h1 className="mt-6 type-display">
+                Förseglade Pokémon TCG-produkter
+              </h1>
+              <p className="mt-6 max-w-xl type-lead text-muted-foreground sm:mt-8">
+                Booster boxes, Elite Trainer Boxes, booster packs och mer, noga
+                utvalt för samlare och spelare.
+              </p>
+              <div className="mt-10 flex flex-col gap-3 sm:flex-row">
+                <ButtonLink href="/pokemon-tcg" size="lg">
+                  Utforska sortimentet
+                </ButtonLink>
+                <ButtonLink href="/kommande" size="lg" variant="secondary">
+                  Kommande släpp
+                </ButtonLink>
+              </div>
+            </div>
+            <BrandMark className="hidden lg:block lg:h-56 xl:h-64" />
+          </div>
         </Container>
       </Section>
 
