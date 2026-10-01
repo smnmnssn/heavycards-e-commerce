@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import { EnvValidationError, parseServerEnv } from "@/lib/env/schema";
 
 const DATABASE_URL = "postgresql://user:secret-password@localhost:5432/app";
+// Test-only value; any 32+ character string is valid.
+const AUTH_SECRET = "unit-test-auth-secret-0123456789abcdef";
 
 /** Minimal valid environment; individual tests override what they exercise. */
 const parse = (overrides: Record<string, string | undefined> = {}) =>
-  parseServerEnv({ DATABASE_URL, ...overrides });
+  parseServerEnv({ DATABASE_URL, AUTH_SECRET, ...overrides });
 
 describe("parseServerEnv", () => {
   it("falls back to localhost in development when APP_URL is unset", () => {
@@ -15,6 +17,11 @@ describe("parseServerEnv", () => {
       vercelEnv: undefined,
       siteUrl: "http://localhost:3000",
       databaseUrl: DATABASE_URL,
+      authSecret: AUTH_SECRET,
+      email: {
+        transport: "console",
+        from: "HeavyCards <no-reply@heavycards.invalid>",
+      },
     });
   });
 
@@ -141,5 +148,94 @@ describe("parseServerEnv", () => {
 
   it("returns a frozen object", () => {
     expect(Object.isFrozen(parse())).toBe(true);
+    expect(Object.isFrozen(parse().email)).toBe(true);
+  });
+});
+
+describe("parseServerEnv: admin authentication", () => {
+  it.each([undefined, "", "too-short-secret"])(
+    "requires an AUTH_SECRET of at least 32 characters (%j)",
+    (value) => {
+      expect(() => parse({ AUTH_SECRET: value })).toThrow(/AUTH_SECRET/);
+    },
+  );
+
+  it("never echoes AUTH_SECRET in errors", () => {
+    expect(() => parse({ AUTH_SECRET: "short-secret-value" })).toThrow(
+      expect.objectContaining({
+        message: expect.not.stringContaining("short-secret-value"),
+      }),
+    );
+  });
+});
+
+describe("parseServerEnv: email", () => {
+  const resend = {
+    EMAIL_TRANSPORT: "resend",
+    RESEND_API_KEY: "re_test_key",
+    EMAIL_FROM: "HeavyCards <admin@example.com>",
+  };
+
+  it("does not send real email by default outside Vercel production", () => {
+    expect(
+      parse({ NODE_ENV: "production", APP_URL: "https://x.se" }).email,
+    ).toMatchObject({ transport: "console" });
+  });
+
+  it("defaults to Resend in Vercel production and requires its settings", () => {
+    const production = {
+      NODE_ENV: "production",
+      VERCEL_ENV: "production",
+      APP_URL: "https://heavycards.se",
+    };
+    expect(() => parse(production)).toThrow(/RESEND_API_KEY and EMAIL_FROM/);
+    expect(
+      parse({ ...production, ...resend, EMAIL_TRANSPORT: undefined }).email,
+    ).toEqual({
+      transport: "resend",
+      from: resend.EMAIL_FROM,
+      resendApiKey: resend.RESEND_API_KEY,
+    });
+  });
+
+  it.each(["console", "file"])(
+    "refuses the %s transport in Vercel production",
+    (transport) => {
+      expect(() =>
+        parse({
+          NODE_ENV: "production",
+          VERCEL_ENV: "production",
+          APP_URL: "https://heavycards.se",
+          EMAIL_TRANSPORT: transport,
+          EMAIL_OUTBOX_DIR: "/tmp/outbox",
+        }),
+      ).toThrow(/EMAIL_TRANSPORT/);
+    },
+  );
+
+  it("accepts the file transport locally with an outbox directory", () => {
+    expect(() => parse({ EMAIL_TRANSPORT: "file" })).toThrow(
+      /EMAIL_OUTBOX_DIR/,
+    );
+    expect(
+      parse({ EMAIL_TRANSPORT: "file", EMAIL_OUTBOX_DIR: "/tmp/outbox" }).email,
+    ).toMatchObject({ transport: "file", outboxDir: "/tmp/outbox" });
+    expect(() =>
+      parse({
+        EMAIL_TRANSPORT: "file",
+        EMAIL_OUTBOX_DIR: "/tmp/outbox",
+        VERCEL_ENV: "preview",
+      }),
+    ).toThrow(/local test runs only/);
+  });
+
+  it("never echoes the Resend API key", () => {
+    expect(() =>
+      parse({ EMAIL_TRANSPORT: "resend", RESEND_API_KEY: "re_secret_123" }),
+    ).toThrow(
+      expect.objectContaining({
+        message: expect.not.stringContaining("re_secret_123"),
+      }),
+    );
   });
 });

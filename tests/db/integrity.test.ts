@@ -446,8 +446,12 @@ describe("administration constraints", () => {
     expect(admin).toMatchObject({
       role: "ADMIN",
       isActive: false,
-      passwordHash: null,
+      emailVerified: false,
     });
+    // Credentials live only in admin_accounts (Better Auth).
+    expect(await db.adminAccount.count({ where: { userId: admin.id } })).toBe(
+      0,
+    );
   });
 
   it("keeps store settings a single row", async () => {

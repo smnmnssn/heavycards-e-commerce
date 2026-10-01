@@ -39,9 +39,41 @@ export type SeedSummary = {
   adminUsers: number;
 };
 
+export type SeedOptions = {
+  /**
+   * Better Auth hash of SEED_ADMIN_PASSWORD. When given, the development
+   * administrators get a credential so they can sign in locally and in the
+   * end-to-end tests. Without it they have no password at all.
+   */
+  adminPasswordHash?: string;
+};
+
+/** Development administrators. All addresses use the reserved .test TLD. */
+export const SEED_ADMINS = [
+  {
+    name: "Utvecklingsägare",
+    email: "owner@heavycards.test",
+    role: "OWNER",
+    isActive: true,
+  },
+  {
+    name: "Utvecklingsadmin",
+    email: "admin@heavycards.test",
+    role: "ADMIN",
+    isActive: true,
+  },
+  {
+    name: "Inaktiv admin",
+    email: "inactive@heavycards.test",
+    role: "ADMIN",
+    isActive: false,
+  },
+] as const;
+
 export async function seedDatabase(
   db: PrismaClient,
   now: Date = new Date(),
+  { adminPasswordHash }: SeedOptions = {},
 ): Promise<SeedSummary> {
   const daysAgo = (days: number) => new Date(now.getTime() - days * DAY_MS);
   const futureDate = (days: number) =>
@@ -71,28 +103,41 @@ export async function seedDatabase(
       });
 
       // --- Administrators ---------------------------------------------------
-      // No passwords: credentials are set through the secure flow built in
-      // Milestone 6. Development defaults must never become real credentials.
-      const owner = await tx.adminUser.upsert({
-        where: { email: "owner@heavycards.test" },
-        create: {
-          name: "Utvecklingsägare",
-          email: "owner@heavycards.test",
-          role: "OWNER",
-          isActive: true,
-        },
-        update: { role: "OWNER", isActive: true },
-      });
-      await tx.adminUser.upsert({
-        where: { email: "admin@heavycards.test" },
-        create: {
-          name: "Utvecklingsadmin",
-          email: "admin@heavycards.test",
-          role: "ADMIN",
-          isActive: true,
-        },
-        update: { role: "ADMIN", isActive: true },
-      });
+      // Passwords come only from SEED_ADMIN_PASSWORD (never from source), and
+      // the seed guard refuses production. Status and role are reset on every
+      // run so local and E2E runs start from a known state.
+      const admins: Record<string, { id: string }> = {};
+      for (const admin of SEED_ADMINS) {
+        const row = await tx.adminUser.upsert({
+          where: { email: admin.email },
+          create: { ...admin, emailVerified: true },
+          update: {
+            role: admin.role,
+            isActive: admin.isActive,
+            emailVerified: true,
+          },
+          select: { id: true },
+        });
+        admins[admin.email] = row;
+        if (adminPasswordHash) {
+          await tx.adminAccount.upsert({
+            where: {
+              providerId_accountId: {
+                providerId: "credential",
+                accountId: row.id,
+              },
+            },
+            create: {
+              userId: row.id,
+              providerId: "credential",
+              accountId: row.id,
+              password: adminPasswordHash,
+            },
+            update: { password: adminPasswordHash },
+          });
+        }
+      }
+      const owner = admins["owner@heavycards.test"]!;
 
       // --- Categories ------------------------------------------------------
       const categoryRows = [

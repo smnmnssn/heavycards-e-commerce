@@ -2,6 +2,8 @@ import { existsSync } from "node:fs";
 
 import { defineConfig, devices } from "@playwright/test";
 
+import { EMAIL_OUTBOX_DIR } from "./e2e/admin-helpers";
+
 // Some tests look up seeded product IDs (read-only). Mirror Next.js and
 // prisma.config.ts for local runs; CI provides DATABASE_URL directly.
 if (!process.env.DATABASE_URL && existsSync(".env.local")) {
@@ -41,5 +43,11 @@ export default defineConfig({
     url: `${baseURL}/api/health`,
     reuseExistingServer: !isCI,
     timeout: 120_000,
+    // Auth origin checks need APP_URL to match the server's own origin.
+    env: {
+      APP_URL: baseURL,
+      EMAIL_TRANSPORT: "file",
+      EMAIL_OUTBOX_DIR,
+    },
   },
 });

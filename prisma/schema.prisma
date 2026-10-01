@@ -368,23 +368,134 @@ model ReviewToken {
 // Administration
 // ---------------------------------------------------------------------------
 
-/// Individual administrator identity. Accounts are deactivated, not deleted,
-/// so the audit trail stays attributable. Session/credential tables required
-/// by the auth library are added in Milestone 6.
+/// Individual administrator identity. Also Better Auth's `user` model, so
+/// there is exactly one identity per administrator. Passwords live only in
+/// AdminAccount (Better Auth's credential account); this table holds no
+/// credential. Accounts are deactivated, not deleted, so the audit trail
+/// stays attributable. `role` and `isActive` are never writable through auth
+/// endpoints (Better Auth `input: false`); only server code changes them.
 model AdminUser {
-  id           String     @id @default(uuid(7)) @db.Uuid
-  name         String     @db.VarChar(120)
+  id            String            @id @default(uuid(7)) @db.Uuid
+  name          String            @db.VarChar(120)
   /// Stored lowercase (CHECK constraint) so uniqueness is case-insensitive.
-  email        String     @unique @db.VarChar(320)
-  /// NULL until the invited administrator sets a password (Milestone 6).
-  passwordHash String?    @map("password_hash") @db.VarChar(255)
-  role         AdminRole  @default(ADMIN)
-  isActive     Boolean    @default(false) @map("is_active")
-  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
-  auditLogs    AuditLog[]
+  email         String            @unique @db.VarChar(320)
+  /// Required by Better Auth. Admins are created from accepted invitations
+  /// (proof of mailbox access) or by the bootstrap CLI, so it is set true then.
+  emailVerified Boolean           @default(false) @map("email_verified")
+  /// Required by Better Auth; unused in V1.
+  image         String?           @db.VarChar(2048)
+  role          AdminRole         @default(ADMIN)
+  isActive      Boolean           @default(false) @map("is_active")
+  createdAt     DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+  auditLogs     AuditLog[]
+  sessions      AdminSession[]
+  accounts      AdminAccount[]
+  invitesSent   AdminInvitation[] @relation("InvitationInviter")
+  invitesUsed   AdminInvitation[] @relation("InvitationAcceptedBy")
 
   @@map("admin_users")
+}
+
+/// Better Auth session. The token is the opaque value inside the signed,
+/// HttpOnly session cookie; it is never logged. Rows are removed on sign-out,
+/// password reset and deactivation.
+model AdminSession {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  token     String   @unique @db.VarChar(255)
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(3)
+  ipAddress String?  @map("ip_address") @db.VarChar(64)
+  userAgent String?  @map("user_agent") @db.VarChar(1024)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user AdminUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("admin_sessions")
+}
+
+/// Better Auth account. V1 only uses the "credential" provider, whose
+/// `password` column holds Better Auth's scrypt hash: the single password
+/// store for an administrator. OAuth token columns are required by the
+/// library and stay NULL.
+model AdminAccount {
+  id                    String    @id @default(uuid(7)) @db.Uuid
+  userId                String    @map("user_id") @db.Uuid
+  accountId             String    @map("account_id") @db.VarChar(255)
+  providerId            String    @map("provider_id") @db.VarChar(64)
+  password              String?   @db.VarChar(255)
+  accessToken           String?   @map("access_token")
+  refreshToken          String?   @map("refresh_token")
+  idToken               String?   @map("id_token")
+  accessTokenExpiresAt  DateTime? @map("access_token_expires_at") @db.Timestamptz(3)
+  refreshTokenExpiresAt DateTime? @map("refresh_token_expires_at") @db.Timestamptz(3)
+  scope                 String?   @db.VarChar(1024)
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user AdminUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, accountId])
+  @@index([userId])
+  @@map("admin_accounts")
+}
+
+/// Better Auth verification values (password-reset tokens). Identifiers are
+/// stored hashed (`verification.storeIdentifier: "hashed"`), so a database
+/// read does not reveal a usable reset link.
+model AuthVerification {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  identifier String   @db.VarChar(255)
+  value      String   @db.VarChar(1024)
+  expiresAt  DateTime @map("expires_at") @db.Timestamptz(3)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@index([identifier])
+  @@index([expiresAt])
+  @@map("auth_verifications")
+}
+
+/// Better Auth rate-limit counters, shared by every serverless instance.
+/// `lastRequest` is a Unix timestamp in milliseconds.
+model AuthRateLimit {
+  id          String @id @default(uuid(7)) @db.Uuid
+  key         String @unique @db.VarChar(255)
+  count       Int
+  lastRequest BigInt @map("last_request")
+
+  @@map("auth_rate_limits")
+}
+
+/// Invitation for a new administrator. Only the SHA-256 hash of the random
+/// token is stored. The administrator row is created when the invitation is
+/// accepted, with the email and role taken from this row, never from the
+/// request. Issuing a new invitation revokes any open one for the same email.
+model AdminInvitation {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  /// Stored lowercase (CHECK constraint).
+  email        String    @db.VarChar(320)
+  name         String    @db.VarChar(120)
+  role         AdminRole @default(ADMIN)
+  /// Lowercase hex SHA-256 of the raw token.
+  tokenHash    String    @unique @map("token_hash") @db.Char(64)
+  invitedById  String    @map("invited_by_id") @db.Uuid
+  acceptedById String?   @unique @map("accepted_by_id") @db.Uuid
+  expiresAt    DateTime  @map("expires_at") @db.Timestamptz(3)
+  acceptedAt   DateTime? @map("accepted_at") @db.Timestamptz(3)
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz(3)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  invitedBy  AdminUser  @relation("InvitationInviter", fields: [invitedById], references: [id], onDelete: Restrict)
+  acceptedBy AdminUser? @relation("InvitationAcceptedBy", fields: [acceptedById], references: [id], onDelete: Restrict)
+
+  @@index([email])
+  @@index([invitedById])
+  @@map("admin_invitations")
 }
 
 /// Append-only record of important changes. adminUserId is NULL for system

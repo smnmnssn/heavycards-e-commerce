@@ -53,6 +53,18 @@ jobs:
       # Also generates the Prisma client (postinstall).
       - run: npm ci
 
+      # Fresh random secrets for this run only: nothing is stored in the
+      # repository. SEED_ADMIN_PASSWORD gives the seeded admins a password
+      # for the end-to-end tests.
+      - name: Generate per-run auth secrets
+        run: |
+          auth_secret="$(openssl rand -base64 32)"
+          seed_password="$(openssl rand -base64 24)"
+          echo "::add-mask::$auth_secret"
+          echo "::add-mask::$seed_password"
+          echo "AUTH_SECRET=$auth_secret" >> "$GITHUB_ENV"
+          echo "SEED_ADMIN_PASSWORD=$seed_password" >> "$GITHUB_ENV"
+
       - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck

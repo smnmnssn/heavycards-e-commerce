@@ -21,13 +21,21 @@ const securityHeaders = [
 // Private areas must never be indexed, regardless of links or sitemaps (PROJECT.md §65).
 const noIndexHeaders = [{ key: "X-Robots-Tag", value: "noindex, nofollow" }];
 
+// Admin pages: invitation and reset links carry single-use tokens in the
+// query string, so no Referer is ever sent from them (later rules override
+// the site-wide Referrer-Policy).
+const adminHeaders = [
+  ...noIndexHeaders,
+  { key: "Referrer-Policy", value: "no-referrer" },
+];
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   async headers() {
     return [
       { source: "/:path*", headers: securityHeaders },
-      { source: "/admin", headers: noIndexHeaders },
-      { source: "/admin/:path*", headers: noIndexHeaders },
+      { source: "/admin", headers: adminHeaders },
+      { source: "/admin/:path*", headers: adminHeaders },
       { source: "/api/:path*", headers: noIndexHeaders },
     ];
   },

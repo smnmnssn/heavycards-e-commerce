@@ -12,15 +12,15 @@ server-side logic. Market: Sweden only, Swedish UI, SEK.
 
 ## Status
 
-| Milestone                 | State |
-| ------------------------- | ----- |
-| 1 — Repository foundation | Done  |
-| 2 — Database foundation   | Done  |
-| 3 — Storefront design     | Done  |
-| 4 — Catalog               | Done  |
-| 5 — Cart                  | Done  |
-| 6 — Admin authentication  | Next  |
-| 7–15                      | —     |
+| Milestone                 | State  |
+| ------------------------- | ------ |
+| 1 — Repository foundation | Done   |
+| 2 — Database foundation   | Done   |
+| 3 — Storefront design     | Done   |
+| 4 — Catalog               | Done   |
+| 5 — Cart                  | Done   |
+| 6 — Admin authentication  | Review |
+| 7–15                      | —      |
 
 Sections below marked _(later milestone)_ are placeholders and are filled in as
 those features land.
@@ -38,7 +38,8 @@ Versions are pinned exactly in `package.json`, and `package-lock.json` is commit
 | Validation | Zod 4                                                                                      |
 | Quality    | ESLint 9 (`eslint-config-next`), Prettier 3                                                |
 | Tests      | Vitest 5 (unit/domain/components), Playwright 1.63 + axe (E2E, desktop + mobile Chromium)  |
-| Planned    | Stripe Checkout, Resend, Vercel Blob, React Hook Form                                      |
+| Auth/email | Better Auth 1.7.7 (admin authentication), Resend 6.31 (admin emails)                       |
+| Planned    | Stripe Checkout, Vercel Blob, React Hook Form                                              |
 
 ## Local setup
 
@@ -56,6 +57,9 @@ npm run db:seed              # development data (safe to re-run)
 npm run dev                  # http://localhost:3000
 ```
 
+Set `AUTH_SECRET` in `.env.local` before starting (see below). To sign in to
+`/admin` locally, see [Admin access](#admin-access).
+
 ## Environment variables
 
 All variables are documented in [.env.example](.env.example). Only real secrets
@@ -67,29 +71,36 @@ Validation lives in `src/lib/env/schema.ts` and runs:
 - during `next build`, when the root layout is prerendered, so an invalid configuration fails the build;
 - at server startup, via `src/instrumentation.ts`.
 
-`DATABASE_URL` is required everywhere. `APP_URL` is required for any production
-build or server, except on Vercel previews, which fall back to the deployment URL. Server code reads validated
+`DATABASE_URL` and `AUTH_SECRET` (at least 32 characters, e.g.
+`openssl rand -base64 32`, unique per environment) are required everywhere.
+`APP_URL` is required for any production build or server, except on Vercel
+previews, which fall back to the deployment URL. `APP_URL` is also the only
+origin trusted by the admin login's origin/CSRF checks.
+
+Email settings (`EMAIL_TRANSPORT`, `RESEND_API_KEY`, `EMAIL_FROM`) are described
+under [Email](#email). Server code reads validated
 values from `@/lib/env/server`, which is marked `server-only`.
 
 ## Scripts
 
-| Script                | Purpose                                                          |
-| --------------------- | ---------------------------------------------------------------- |
-| `npm run dev`         | Development server                                               |
-| `npm run build`       | Production build (requires `APP_URL`)                            |
-| `npm run start`       | Serve the production build                                       |
-| `npm run lint`        | ESLint, zero warnings allowed                                    |
-| `npm run format`      | Format with Prettier (`format:check` verifies only, used in CI)  |
-| `npm run typecheck`   | Generate Next.js route types, then `tsc --noEmit`                |
-| `npm test`            | Vitest, single run (`test:watch` for watch mode)                 |
-| `npm run test:db`     | Vitest against the PostgreSQL test database                      |
-| `npm run test:e2e`    | Playwright against the production build (build first, see below) |
-| `npm run db:migrate`  | Create and apply a migration after editing the schema (dev only) |
-| `npm run db:deploy`   | Apply pending migrations (CI, production)                        |
-| `npm run db:check`    | Validate the schema and verify the database matches it (drift)   |
-| `npm run db:seed`     | Load development seed data (refuses production/remote databases) |
-| `npm run db:reset`    | Drop and recreate the dev database, then seed (asks to confirm)  |
-| `npm run db:generate` | Regenerate the Prisma client (runs automatically on install)     |
+| Script                       | Purpose                                                                  |
+| ---------------------------- | ------------------------------------------------------------------------ |
+| `npm run dev`                | Development server                                                       |
+| `npm run build`              | Production build (requires `APP_URL`)                                    |
+| `npm run start`              | Serve the production build                                               |
+| `npm run lint`               | ESLint, zero warnings allowed                                            |
+| `npm run format`             | Format with Prettier (`format:check` verifies only, used in CI)          |
+| `npm run typecheck`          | Generate Next.js route types, then `tsc --noEmit`                        |
+| `npm test`                   | Vitest, single run (`test:watch` for watch mode)                         |
+| `npm run test:db`            | Vitest against the PostgreSQL test database                              |
+| `npm run test:e2e`           | Playwright against the production build (build first, see below)         |
+| `npm run db:migrate`         | Create and apply a migration after editing the schema (dev only)         |
+| `npm run db:deploy`          | Apply pending migrations (CI, production)                                |
+| `npm run db:check`           | Validate the schema and verify the database matches it (drift)           |
+| `npm run db:seed`            | Load development seed data (refuses production/remote databases)         |
+| `npm run db:reset`           | Drop and recreate the dev database, then seed (asks to confirm)          |
+| `npm run db:generate`        | Regenerate the Prisma client (runs automatically on install)             |
+| `npm run admin:create-owner` | Create the first OWNER administrator (see [Admin access](#admin-access)) |
 
 ## Testing
 
@@ -118,6 +129,12 @@ npm run test:e2e
 ```
 
 Every E2E test runs on a desktop and a mobile (Pixel 7) Chromium profile.
+
+The admin tests sign in as the seeded administrators, so `SEED_ADMIN_PASSWORD`
+must be set (in `.env.local`) and `npm run db:seed` must have run with it. The
+test server writes emails to `.e2e-outbox/` instead of sending them. Tests that
+invite administrators create `e2e-…@heavycards.test` accounts in the
+development database; they are deactivated by the test and can be ignored.
 
 CI (`.github/workflows/ci.yml`) runs on every push to `main` and on pull requests:
 
@@ -186,8 +203,10 @@ Deployments apply migrations with `npm run db:deploy`. Never use
 **Seed.** `npm run db:seed` is idempotent and creates:
 
 - store settings with placeholder commercial values;
-- two admins (`owner@heavycards.test` as OWNER, `admin@heavycards.test` as
-  ADMIN). Neither has a password yet; logging in arrives with Milestone 6.
+- three admins: `owner@heavycards.test` (OWNER), `admin@heavycards.test`
+  (ADMIN) and `inactive@heavycards.test` (inactive ADMIN). They have a
+  password only if `SEED_ADMIN_PASSWORD` is set (local only, at least 12
+  characters). There is no default password;
 - 6 categories, 7 Pokémon sets and 12 products covering: in stock, low stock,
   sold out, on sale, coming soon, preorder, draft, archived and accessory;
 - 5 orders: shipped, processing, partially refunded, pending with an active
@@ -201,9 +220,68 @@ production and against non-local databases unless
 
 ## Stripe local webhook development _(Milestones 8–9)_
 
-## Email development _(Milestone 10)_
+## Email
 
-## Admin bootstrap _(Milestone 6)_
+Admin invitations and password resets are sent by email (order emails follow
+in Milestone 10). `EMAIL_TRANSPORT` selects delivery:
+
+| Value     | Behaviour                                                                                                                                         |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `console` | Default outside Vercel production. Nothing is sent; the server log shows recipient and subject, and in `next dev` also the message with its link. |
+| `resend`  | Real delivery via Resend. Default and required in Vercel production. Needs `RESEND_API_KEY` and `EMAIL_FROM`.                                     |
+| `file`    | Nothing is sent; messages are written as JSON to `EMAIL_OUTBOX_DIR`. Used by the E2E tests; refused on Vercel.                                    |
+
+Remaining Resend setup before production (Milestone 15):
+
+1. Verify the sending domain in Resend (SPF/DKIM DNS records).
+2. Create a sending-only API key and set `RESEND_API_KEY` in Vercel
+   (Production only).
+3. Set `EMAIL_FROM` to an address on the verified domain, e.g.
+   `HeavyCards <admin@heavycards.se>`.
+
+## Admin access
+
+Administrators sign in at `/admin/login`. There is no public sign-up. Roles:
+
+- **OWNER**: everything, including administrator management at `/admin/users`.
+- **ADMIN**: the admin area except administrator management.
+
+**First OWNER (production or a fresh database).** Run once, against the target
+database, from a trusted machine:
+
+```bash
+DATABASE_URL=... npm run admin:create-owner -- --email owner@example.com --name "Förnamn Efternamn"
+```
+
+- The password is asked for twice in a hidden prompt (minimum 12 characters,
+  paste and password managers work). It is never accepted as an argument and
+  never printed.
+- To run it non-interactively, pipe the password on stdin.
+- The command refuses when an active OWNER already exists or the email is
+  taken.
+- Sign in afterwards at `/admin/login`.
+
+**More administrators.** An OWNER invites them at `/admin/users`.
+
+- The invitee receives a single-use link, valid for 72 hours, and chooses a
+  password; the account is then active.
+- Invitations always create the ADMIN role.
+- OWNERs can deactivate and reactivate administrators. Deactivation ends the
+  account's sessions immediately.
+- The last active OWNER can never be deactivated.
+
+**Forgotten password.** Use "Glömt lösenordet?" on the login page.
+
+- The link is valid for one hour and can be used once.
+- Changing the password signs out all sessions.
+
+**Local development.** Either:
+
+- set `SEED_ADMIN_PASSWORD` in `.env.local` and run `npm run db:seed`, then
+  sign in as `owner@heavycards.test` or `admin@heavycards.test`; or
+- run `npm run admin:create-owner` against an empty database.
+
+Sessions last 8 hours. Security design: docs/architecture.md → Milestone 6.
 
 ## Deployment _(Milestone 15)_
 

@@ -94,14 +94,25 @@ Swedish characters are transliterated in slugs (å/ä → a, ö → o).
 
 ## Admin and API
 
-| Route                 | Purpose                                             | Milestone |
-| --------------------- | --------------------------------------------------- | --------- |
-| `/admin/**`           | Admin application (never indexable)                 | 6+        |
-| `/api/health`         | Health check                                        | 1–2       |
-| `/api/cart`           | POST: current data for cart product IDs (read-only) | 5         |
-| `/api/stripe/webhook` | Stripe webhook                                      | 9         |
+| Route                    | Purpose                                                                                   | Milestone |
+| ------------------------ | ----------------------------------------------------------------------------------------- | --------- |
+| `/admin/login`           | Sign-in (public)                                                                          | 6         |
+| `/admin/forgot-password` | Request a password-reset link (public)                                                    | 6         |
+| `/admin/reset-password`  | Set a new password with `?token=` (public)                                                | 6         |
+| `/admin/invite`          | Accept an invitation with `?token=` (public)                                              | 6         |
+| `/admin`                 | Dashboard (signed in)                                                                     | 6         |
+| `/admin/users`           | Administrator management (OWNER only)                                                     | 6         |
+| `/admin/**`              | Further admin areas (signed in)                                                           | 7+        |
+| `/api/auth/*`            | Better Auth: sign-in, sign-out, get-session, password reset only; every other path is 404 | 6         |
+| `/api/health`            | Health check                                                                              | 1–2       |
+| `/api/cart`              | POST: current data for cart product IDs (read-only)                                       | 5         |
+| `/api/stripe/webhook`    | Stripe webhook                                                                            | 9         |
 
 `/admin/**` and `/api/**` send `X-Robots-Tag: noindex, nofollow` (next.config.ts).
+`/admin/**` also sends `Referrer-Policy: no-referrer`, because invitation and
+reset links carry tokens in the query string. `src/proxy.ts` redirects
+requests without a session cookie to `/admin/login`; it is a convenience only,
+and every admin page and action authorizes itself on the server.
 
 ## Development only
 

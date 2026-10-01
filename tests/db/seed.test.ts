@@ -25,7 +25,7 @@ describe("development seed", () => {
       products: 13,
       orders: 5,
       reviews: 4,
-      adminUsers: 2,
+      adminUsers: 3,
     });
     expect(await db.auditLog.count()).toBe(2);
   });
@@ -43,11 +43,37 @@ describe("development seed", () => {
     }
   });
 
-  it("creates a development OWNER without credentials", async () => {
-    const owners = await db.adminUser.findMany({ where: { role: "OWNER" } });
+  it("creates development administrators without credentials by default", async () => {
+    const admins = await db.adminUser.findMany({
+      select: { email: true, role: true, isActive: true },
+      orderBy: { email: "asc" },
+    });
 
-    expect(owners).toHaveLength(1);
-    expect(owners[0]).toMatchObject({ isActive: true, passwordHash: null });
+    expect(admins).toEqual([
+      { email: "admin@heavycards.test", role: "ADMIN", isActive: true },
+      { email: "inactive@heavycards.test", role: "ADMIN", isActive: false },
+      { email: "owner@heavycards.test", role: "OWNER", isActive: true },
+    ]);
+    expect(await db.adminAccount.count()).toBe(0);
+  });
+
+  it("adds credentials only when given a password hash, without duplicating them", async () => {
+    await seedDatabase(db, now, { adminPasswordHash: "hash-1" });
+    await seedDatabase(db, now, { adminPasswordHash: "hash-2" });
+
+    const accounts = await db.adminAccount.findMany({
+      select: { providerId: true, password: true },
+    });
+    expect(accounts).toHaveLength(3);
+    for (const account of accounts) {
+      expect(account).toEqual({ providerId: "credential", password: "hash-2" });
+    }
+
+    // Re-running without a password leaves existing credentials untouched.
+    await seedDatabase(db, now);
+    expect(await db.adminAccount.count({ where: { password: "hash-2" } })).toBe(
+      3,
+    );
   });
 
   it("covers the catalog states later milestones need", async () => {

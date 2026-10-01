@@ -2,9 +2,11 @@
 
 PostgreSQL via Prisma ORM 7. The source of truth is
 [prisma/schema.prisma](../prisma/schema.prisma). Invariants Prisma cannot express
-(CHECK constraints, the order-number sequence start) live at the end of the
-initial migration,
-[prisma/migrations/20260930205053_init/migration.sql](../prisma/migrations/20260930205053_init/migration.sql).
+(CHECK constraints, the order-number sequence start) live at the end of each
+migration:
+[20260930205053_init](../prisma/migrations/20260930205053_init/migration.sql) and
+[20261001090000_admin_auth](../prisma/migrations/20261001090000_admin_auth/migration.sql)
+(Milestone 6).
 
 This document explains the decisions behind the schema. Keep it in sync when
 the schema changes.
@@ -35,7 +37,12 @@ the schema changes.
 | `StripeEvent`          | `stripe_events`          | Processed webhook event IDs (idempotency).                            |
 | `Review`               | `reviews`                | Product reviews with moderation status and verified-purchase marker.  |
 | `ReviewToken`          | `review_tokens`          | Hashed secure review-link tokens.                                     |
-| `AdminUser`            | `admin_users`            | Individual administrator identities with roles.                       |
+| `AdminUser`            | `admin_users`            | Individual administrator identities with roles (Better Auth `user`).  |
+| `AdminSession`         | `admin_sessions`         | Better Auth sessions (opaque token in the signed cookie).             |
+| `AdminAccount`         | `admin_accounts`         | Better Auth credential accounts: the only password store.             |
+| `AuthVerification`     | `auth_verifications`     | Password-reset values; identifiers stored hashed.                     |
+| `AuthRateLimit`        | `auth_rate_limits`       | Shared rate-limit counters for the auth endpoints.                    |
+| `AdminInvitation`      | `admin_invitations`      | Hashed, expiring, single-use invitations for new administrators.      |
 | `AuditLog`             | `audit_logs`             | Append-only record of important admin/system actions.                 |
 | `Redirect`             | `redirects`              | Permanent redirects for changed public URLs.                          |
 | `StoreSettings`        | `store_settings`         | Single-row commercial configuration (no secrets).                     |
@@ -57,18 +64,20 @@ Enums:
 Rows with financial or historical meaning are never cascade-deleted. Deleting
 them has to be deliberate, and normal UI archives instead.
 
-| Relation                               | On delete of parent | Why                                                                                                |
-| -------------------------------------- | ------------------- | -------------------------------------------------------------------------------------------------- |
-| Product → Category (required)          | **Restrict**        | A category in use cannot disappear from under its products.                                        |
-| Product → PokemonSet (optional)        | **Restrict**        | Same, for sets.                                                                                    |
-| ProductImage → Product                 | **Cascade**         | Images belong to the product. The app deletes the stored blobs itself.                             |
-| OrderItem → Order                      | **Restrict**        | Orders are financial records and are never deleted.                                                |
-| OrderItem → Product                    | **Restrict**        | A product with sales history cannot be deleted; archive it (`status = ARCHIVED`).                  |
-| InventoryReservation → Order / Product | **Restrict**        | Reservation history stays attached to its checkout.                                                |
-| Review → Product                       | **Restrict**        | Reviews are content tied to a real purchase.                                                       |
-| Review → OrderItem (optional, unique)  | **Restrict**        | Keeps verified-purchase evidence intact.                                                           |
-| ReviewToken → Order                    | **Restrict**        | Tokens are part of the order's history.                                                            |
-| AuditLog → AdminUser (optional)        | **Restrict**        | Admins are deactivated (`isActive = false`), never deleted, so the audit trail stays attributable. |
+| Relation                                          | On delete of parent | Why                                                                                                   |
+| ------------------------------------------------- | ------------------- | ----------------------------------------------------------------------------------------------------- |
+| Product → Category (required)                     | **Restrict**        | A category in use cannot disappear from under its products.                                           |
+| Product → PokemonSet (optional)                   | **Restrict**        | Same, for sets.                                                                                       |
+| ProductImage → Product                            | **Cascade**         | Images belong to the product. The app deletes the stored blobs itself.                                |
+| OrderItem → Order                                 | **Restrict**        | Orders are financial records and are never deleted.                                                   |
+| OrderItem → Product                               | **Restrict**        | A product with sales history cannot be deleted; archive it (`status = ARCHIVED`).                     |
+| InventoryReservation → Order / Product            | **Restrict**        | Reservation history stays attached to its checkout.                                                   |
+| Review → Product                                  | **Restrict**        | Reviews are content tied to a real purchase.                                                          |
+| Review → OrderItem (optional, unique)             | **Restrict**        | Keeps verified-purchase evidence intact.                                                              |
+| ReviewToken → Order                               | **Restrict**        | Tokens are part of the order's history.                                                               |
+| AuditLog → AdminUser (optional)                   | **Restrict**        | Admins are deactivated (`isActive = false`), never deleted, so the audit trail stays attributable.    |
+| AdminSession / AdminAccount → AdminUser           | **Cascade**         | Auth state belongs to the identity. Admins are never deleted in practice, so this is only a fallback. |
+| AdminInvitation → AdminUser (inviter, acceptedBy) | **Restrict**        | Invitations are part of the audit trail.                                                              |
 
 The DB tests in `tests/db/integrity.test.ts` exercise each Restrict/Cascade rule.
 
@@ -222,18 +231,49 @@ availableToSell = stockOnHand − Σ quantity of reservations that are ACTIVE an
 
 ## Administrators and audit
 
+Authentication uses Better Auth (see docs/architecture.md → Milestone 6).
+
+- **One identity.** `AdminUser` is Better Auth's `user` model, so there is
+  exactly one identity per administrator. `role` and `isActive` are
+  application fields that no auth endpoint can write (`input: false`; the
+  update and sign-up endpoints are disabled).
+- **One password store.** The password lives only in `admin_accounts.password`
+  (provider `credential`, `account_id` = user id) as Better Auth's scrypt hash.
+  The former `admin_users.password_hash` column was dropped in
+  `20261001090000_admin_auth` (it held no data). The OAuth token columns exist
+  because the library requires them and stay NULL.
 - `AdminUser.email` is unique and stored lowercase (CHECK), so identities are
-  unique case-insensitively.
-- New admins default to `ADMIN` and `isActive = false`. They are activated
-  when the invitation is accepted.
-- `passwordHash` is nullable until a password is set. **Milestone 6** selects
-  the auth library and may move credentials and sessions into library-specific
-  tables. Admin invitations (hashed, expiring, single-use tokens) are also
-  added then.
-- Server-side "cannot remove or demote the last OWNER" enforcement is Milestone 6.
+  unique case-insensitively. `email_verified` is true for administrators created
+  by the bootstrap CLI or an accepted invitation.
+- New rows default to `ADMIN` and `isActive = false`. Administrators are
+  created active, either by the bootstrap CLI (first OWNER) or when an
+  invitation is accepted.
+- **Sessions** (`admin_sessions`) have a fixed 8-hour lifetime. Rows are deleted
+  on sign-out, on password reset and when the account is deactivated.
+- **Password-reset values** (`auth_verifications`) store a hash of
+  `reset-password:<token>` as identifier and the user id as value. They expire
+  after one hour, are consumed on use and are deleted on deactivation.
+- **Rate-limit counters** (`auth_rate_limits`): `key` is `<client ip>|<path>`,
+  `last_request` is Unix milliseconds. Shared by all serverless instances.
+- **Invitations** (`admin_invitations`): name, email (lowercase CHECK), role,
+  SHA-256 `token_hash` (`CHAR(64)`, hex CHECK, unique), inviter, expiry
+  (72 hours, CHECK `expires_at > created_at`), `accepted_at`/`accepted_by_id`
+  (set together, CHECK) or `revoked_at` (never both, CHECK). Issuing a new
+  invitation revokes open ones for the same email. Single use is enforced by a
+  conditional update in the accepting transaction, and the `admin_users.email`
+  unique index prevents duplicate administrators. (A partial unique index for
+  "one open invitation per email" was not used: Prisma cannot model it and
+  would report drift.)
+- **Final OWNER.** Deactivation locks all active OWNER rows (`SELECT … FOR
+UPDATE`) before checking that another active OWNER remains, so concurrent
+  changes cannot leave the store without one (`src/server/admin/admin-users.ts`).
+  Any future demote or remove operation must use the same guard.
 - `AuditLog.adminUserId` is NULL for system actions, such as a webhook marking
-  an order paid. `metadata` (jsonb) must never contain secrets, passwords, raw
-  tokens or payment credentials.
+  an order paid. `metadata` (jsonb) must never contain secrets, passwords,
+  hashes, session tokens, raw invitation/reset tokens or payment credentials.
+  Admin actions logged so far: `BOOTSTRAP_OWNER`, `INVITE_ADMIN`,
+  `REVOKE_ADMIN_INVITATION`, `ACCEPT_ADMIN_INVITATION`, `DEACTIVATE_ADMIN`,
+  `REACTIVATE_ADMIN`.
 
 ## Store settings
 

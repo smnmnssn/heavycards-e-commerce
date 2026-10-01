@@ -412,3 +412,238 @@ None added.
 ### Dependencies
 
 None added.
+
+## Milestone 6 — Admin authentication (2026-10-01)
+
+### Library and versions
+
+- `better-auth` **1.7.7**: latest stable on npm when installed; 1.7.6 was
+  requested and 1.7.7 is the patch release after it. It brings
+  `@better-auth/core` and `@better-auth/prisma-adapter` 1.7.7 transitively.
+  Integrations used: `better-auth/adapters/prisma`, `better-auth/next-js`
+  (`toNextJsHandler`, `nextCookies`), `better-auth/cookies`
+  (`getSessionCookie`) and `better-auth/client`.
+- `resend` **6.31.0** for email. Its optional React Email peer is not
+  installed; templates are plain HTML and text.
+- Password hashing, credential verification, session tokens and cookie
+  signing are all done by Better Auth. The application never hashes or
+  compares a password itself. The bootstrap CLI and invitation acceptance call
+  Better Auth's own hasher (`ctx.password.hash` / `hashPassword` from
+  `better-auth/crypto`; scrypt with N=16384, r=16, p=1).
+
+### One identity, one password store
+
+- `AdminUser` is mapped as Better Auth's `user` (`modelName: "adminUser"`).
+  `role` and `isActive` are `additionalFields` marked `input: false`. Better
+  Auth's `session`, `account`, `verification` and `rateLimit` models map to
+  `AdminSession`, `AdminAccount`, `AuthVerification` and `AuthRateLimit`.
+- The only password is `admin_accounts.password` (credential provider). The
+  unused `admin_users.password_hash` column was dropped.
+- IDs stay Prisma `uuid(7)` (`advanced.database.generateId: false`).
+- Administrators are created only by the bootstrap CLI or an accepted
+  invitation. Both run in our own transaction (user row, credential account
+  and audit entry), never through Better Auth's sign-up.
+
+### No public sign-up; endpoint allowlist
+
+- `emailAndPassword.disableSignUp: true`, plus `disabledPaths` for every core
+  endpoint the app does not use.
+- `/api/auth/[...all]` also answers 404 for any path not in
+  `ALLOWED_AUTH_ENDPOINTS`:
+  - `sign-in/email`, `sign-out`, `get-session`;
+  - `request-password-reset`, `reset-password`;
+  - `ok`, `error`.
+
+  This also covers parameterised paths that `disabledPaths` cannot match
+  exactly. Tested in `tests/unit/app/api/auth-route.test.ts` and
+  `tests/db/admin-auth.test.ts`.
+
+### Sessions and cookies
+
+- **Lifetime.** Fixed 8 hours (`expiresIn`), with no sliding refresh
+  (`disableSessionRefresh`) and no cookie cache. Every lookup reads the
+  session and user rows, so sign-out, deactivation and password reset take
+  effect on the next request.
+- **Cookie.** `heavycards-admin.session_token`, signed with `AUTH_SECRET`:
+  `HttpOnly`, `SameSite=Lax`, `Path=/`, `Max-Age=28800`. On HTTPS (an
+  `APP_URL` starting with `https://`) it is also `Secure` and gets the
+  `__Secure-` prefix.
+- **Inactive administrators** are blocked in three places:
+  - At sign-in, a `session.create.before` database hook refuses the session
+    with Better Auth's own wrong-password error, so the response is
+    byte-identical to a wrong password.
+  - On every request, `resolveAdminSession` rejects sessions of inactive
+    users.
+  - Deactivation deletes the user's sessions and pending reset values.
+- **Logging.** Session tokens, cookies, passwords and raw tokens are never
+  logged. A DB test captures console output during a full sign-in and reset
+  flow and asserts that none of them appears.
+
+### Authorization design
+
+- **Helpers** in `src/lib/auth/session.ts`:
+  - `getCurrentAdmin()`: cached per request with React `cache`;
+  - `requireAdmin()`: redirects to `/admin/login?next=…`;
+  - `requireOwner()`: throws `ForbiddenError` for an ADMIN.
+- **Pages** each call `requireAdmin()` themselves. The `(panel)` layout also
+  calls it, but layouts are not re-run on every navigation, so it is not
+  relied on.
+- **Actions and services** check twice. Server actions call `requireOwner()`.
+  The services in `src/server/admin/*` then re-load the actor inside their
+  transaction and require an active OWNER again (`assertActingOwner`). This
+  catches a role or status change between the session read and the write.
+- **Proxy.** `src/proxy.ts` (the Next 16 proxy) only redirects requests that
+  have no session cookie, and passes the requested path on for the post-login
+  redirect. It never verifies the cookie and is not the security boundary.
+- **ADMIN on OWNER-only pages.** These pages render a server-side "Behörighet
+  saknas" panel without loading any data, and actions return a real error.
+  Next's `forbidden()` would give a true 403 status, but it still requires the
+  experimental `authInterrupts` flag in 16.3, so it is not used.
+- **Permissions in V1:**
+  - OWNER: everything, including `/admin/users` (list administrators, invite
+    ADMINs, revoke invitations, deactivate and reactivate administrators).
+  - ADMIN: the admin area except administrator management.
+  - Later milestones decide which settings count as sensitive (OWNER only).
+- **Final OWNER.** Owners cannot deactivate themselves, and the last active
+  OWNER can never be deactivated, even under concurrency. See
+  docs/database.md → Administrators and audit.
+
+### Login and redirects
+
+- The login form calls Better Auth's HTTP endpoint through the browser client,
+  so rate limiting and origin checks apply. A server action would call
+  `auth.api` directly and bypass the rate limiter.
+- Every credential failure shows "E-postadress eller lösenord är felaktigt."
+  A rate-limited request (429) shows a "too many attempts" message, which
+  reveals nothing about accounts.
+- `safeAdminRedirect` accepts only same-origin, protected `/admin` paths. It
+  rejects:
+  - `//host` and `/\host`;
+  - schemes and control characters;
+  - traversal out of `/admin`;
+  - the public auth pages.
+- A signed-in visit to the login page redirects to the validated destination.
+
+### Origin and CSRF
+
+- **Better Auth's model.** The Origin header is checked against `APP_URL` on
+  every cookie-bearing request, and Fetch Metadata blocks cross-site sign-in
+  attempts from browsers.
+- **Explicit settings.** `disableOriginCheck: false` and
+  `disableCSRFCheck: false` are set explicitly. Otherwise Better Auth skips
+  the origin check when `NODE_ENV=test`, and the tests would not reflect
+  production.
+- **Trusted origins.** Only `APP_URL`; no extra origins.
+- **Server actions** (sign-out, invitations, activation) rely on Next.js's
+  built-in Origin/Host check.
+- **E2E.** The test server runs with `APP_URL=http://localhost:3100`, so
+  origin checks pass without being relaxed.
+
+### Rate limiting
+
+- **Storage.** Better Auth's limiter with `storage: "database"`
+  (`auth_rate_limits`), so every serverless instance shares one counter. An
+  in-memory store would be separate per instance on Vercel.
+- **Rules** (per client IP and path):
+
+  | Endpoint               | Limit             |
+  | ---------------------- | ----------------- |
+  | Sign-in                | 10 per 5 minutes  |
+  | Password-reset request | 5 per 15 minutes  |
+  | Password reset         | 10 per 15 minutes |
+  | Everything else        | 60 per minute     |
+
+- **Client IP.** Taken from `x-forwarded-for` (single value). On Vercel the
+  platform sets this header, so clients cannot choose their IP. Behind a proxy
+  that passes a client-supplied header through, the limiter could be
+  bypassed; configure `advanced.ipAddress.trustedProxies` in that case.
+- **Not rate limited:**
+  - the invitation-acceptance action (256-bit tokens make brute force
+    infeasible);
+  - the OWNER-only actions (callers are authenticated).
+- **No per-account lockout.** Per-IP limits plus long passwords are the V1
+  defence.
+
+### Password policy and reset
+
+- **Policy.** 12 to 128 characters. No composition rules, any characters
+  allowed, never trimmed. Inputs are plain `type="password"` fields with
+  correct `autocomplete` values, so password managers and paste work.
+- **Reset flow:**
+  - The response is the same for every address.
+  - Emails go only to active administrators.
+  - The token is Better Auth's own: valid for one hour, single use, with its
+    identifier stored hashed (`verification.storeIdentifier: "hashed"`).
+  - Delivery runs in Next's `after()`, so response time does not reveal
+    whether an email was sent.
+  - `revokeSessionsOnPasswordReset` signs out every session.
+  - No security questions.
+  - The emailed link points to `/admin/reset-password?token=…`.
+
+### Invitations
+
+- **Creating.** The OWNER enters a name and email. The role is always ADMIN:
+  the form has no role field, and the server ignores any posted role. The
+  token is 256-bit (`generateSecureToken`). Only its SHA-256 is stored; it
+  expires after 72 hours and works once. Any previous open invitation for the
+  same address is revoked. If the email cannot be delivered, the invitation
+  is revoked and the OWNER sees an error.
+- **Accepting** happens in one transaction: the administrator is created from
+  the stored invitation (email, name, role), the password is set with Better
+  Auth's hasher, and the invitation is claimed with a conditional update.
+  Concurrent or repeated submissions fail with the same generic message as
+  expired, revoked or malformed tokens.
+
+### Email foundation
+
+- **Transports** (`src/lib/email/transport.ts`):
+  - `resend`: real delivery;
+  - `console`: logs recipient and subject; the message body and link only
+    outside production builds;
+  - `file`: one JSON file per message, for E2E;
+  - a memory transport for the DB tests.
+- **Defaults.** `EMAIL_TRANSPORT` defaults to `resend` only in Vercel
+  production and to `console` everywhere else. Development, CI and previews
+  therefore never mail real recipients unless configured to.
+- **Guards.** `console` and `file` are refused in Vercel production; `file` is
+  refused on any Vercel deployment.
+- Order emails and a fuller layout come in Milestone 10.
+
+### Bootstrap and seed
+
+- **Bootstrap.** `npm run admin:create-owner -- --email … --name …` creates the
+  first OWNER.
+  - The password comes from a hidden prompt (entered twice) or the first line
+    of piped stdin. It is never taken from arguments and never printed.
+  - The script refuses when an active OWNER exists or the email is taken.
+  - Concurrent runs are serialised with an advisory lock.
+- **Seed.** The development seed creates `owner@`, `admin@` and
+  `inactive@heavycards.test`.
+  - They get a password only when `SEED_ADMIN_PASSWORD` is set; there is no
+    default in source.
+  - The seed guard still refuses production and remote databases.
+  - CI generates a random `SEED_ADMIN_PASSWORD` and `AUTH_SECRET` per run.
+
+### Testing
+
+- **Unit:** env rules, redirect safety, password policy, email templates and
+  transports, the endpoint allowlist and the proxy.
+- **DB** (`tests/db/admin-*.test.ts`) runs the real Better Auth configuration
+  against the test database. It covers:
+  - sign-in, generic errors, cookies, CSRF and the absence of sign-up;
+  - sessions, inactive denial, sign-out and password reset;
+  - rate limits and logging;
+  - roles and the final OWNER, including concurrency;
+  - invitations and bootstrap.
+- **E2E** (`e2e/admin.spec.ts`, on desktop and mobile) covers:
+  - redirects, invalid and inactive login, and keyboard login;
+  - OWNER and ADMIN sessions, the shell and sign-out;
+  - open-redirect protection and server-side denial for ADMIN;
+  - the full invitation → activation → sign-in → deactivation journey;
+  - axe checks.
+
+  Each test uses its own client IP, so rate limits never collide.
+
+### Dependencies
+
+`better-auth` 1.7.7 and `resend` 6.31.0, both pinned exactly.
