@@ -44,6 +44,9 @@ const rawServerEnvSchema = z.object({
   RESEND_API_KEY: optionalNonEmpty(z.string()),
   EMAIL_FROM: optionalNonEmpty(z.string()),
   EMAIL_OUTBOX_DIR: optionalNonEmpty(z.string()),
+  STORAGE_PROVIDER: optionalNonEmpty(z.enum(["vercel-blob", "local"])),
+  BLOB_READ_WRITE_TOKEN: optionalNonEmpty(z.string()),
+  STORAGE_LOCAL_DIR: optionalNonEmpty(z.string()),
 });
 
 /**
@@ -60,6 +63,21 @@ export type EmailConfig = Readonly<
   | { transport: "file"; from: string; outboxDir: string }
 >;
 
+/**
+ * Where product images are stored (PROJECT.md §4, §14):
+ * - `vercel-blob`: Vercel Blob (default and only option on Vercel). The
+ *   read/write token is required in Vercel production; on previews without
+ *   one, uploads fail with a clear admin error while the store keeps working.
+ * - `local`: files in a git-ignored local directory, served by
+ *   `/api/media/*`. For development and E2E only; refused on Vercel.
+ */
+export type StorageConfig = Readonly<
+  | { provider: "vercel-blob"; blobToken: string | null }
+  | { provider: "local"; directory: string }
+>;
+
+export const DEFAULT_LOCAL_STORAGE_DIR = ".storage";
+
 const PLACEHOLDER_SENDER = "HeavyCards <no-reply@heavycards.invalid>";
 
 export type ServerEnv = Readonly<{
@@ -72,6 +90,7 @@ export type ServerEnv = Readonly<{
   /** Signs auth cookies and tokens. Secret: never log it. */
   authSecret: string;
   email: EmailConfig;
+  storage: StorageConfig;
 }>;
 
 export class EnvValidationError extends Error {
@@ -157,6 +176,31 @@ function resolveEmail(
   return { transport, from };
 }
 
+function resolveStorage(
+  env: z.infer<typeof rawServerEnvSchema>,
+): StorageConfig | Error {
+  const provider =
+    env.STORAGE_PROVIDER ?? (env.VERCEL_ENV ? "vercel-blob" : "local");
+
+  if (provider === "local") {
+    if (env.VERCEL_ENV) {
+      return new Error(
+        "STORAGE_PROVIDER: local is for local development and tests only; use vercel-blob on Vercel",
+      );
+    }
+    return {
+      provider,
+      directory: env.STORAGE_LOCAL_DIR ?? DEFAULT_LOCAL_STORAGE_DIR,
+    };
+  }
+  if (env.VERCEL_ENV === "production" && !env.BLOB_READ_WRITE_TOKEN) {
+    return new Error(
+      "BLOB_READ_WRITE_TOKEN: required in the Vercel production environment (connect a Vercel Blob store)",
+    );
+  }
+  return { provider, blobToken: env.BLOB_READ_WRITE_TOKEN ?? null };
+}
+
 /**
  * Validates a raw environment object. Error messages name the offending
  * variables but never echo their values, so secrets cannot leak into logs.
@@ -175,8 +219,15 @@ export function parseServerEnv(
 
   const siteUrl = resolveSiteUrl(result.data);
   const email = resolveEmail(result.data);
-  const errors = [siteUrl, email].filter((value) => value instanceof Error);
-  if (siteUrl instanceof Error || email instanceof Error) {
+  const storage = resolveStorage(result.data);
+  const errors = [siteUrl, email, storage].filter(
+    (value) => value instanceof Error,
+  );
+  if (
+    siteUrl instanceof Error ||
+    email instanceof Error ||
+    storage instanceof Error
+  ) {
     throw new EnvValidationError(errors.map((error) => error.message));
   }
 
@@ -187,5 +238,6 @@ export function parseServerEnv(
     databaseUrl: result.data.DATABASE_URL,
     authSecret: result.data.AUTH_SECRET,
     email: Object.freeze(email),
+    storage: Object.freeze(storage),
   });
 }

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { defineConfig, devices } from "@playwright/test";
 
 import { EMAIL_OUTBOX_DIR } from "./e2e/admin-helpers";
+import { E2E_STORAGE_DIR } from "./e2e/storage-dir";
 
 // Some tests look up seeded product IDs (read-only). Mirror Next.js and
 // prisma.config.ts for local runs; CI provides DATABASE_URL directly.
@@ -11,6 +12,7 @@ if (!process.env.DATABASE_URL && existsSync(".env.local")) {
 }
 
 const isCI = Boolean(process.env.CI);
+const CATALOG_ADMIN_SPEC = /admin-catalog\.spec\.ts$/;
 const port = Number(process.env.E2E_PORT ?? 3100);
 const baseURL = `http://localhost:${port}`;
 
@@ -35,8 +37,28 @@ export default defineConfig({
   },
   // The storefront is mobile-first, so every flow runs on a phone viewport too.
   projects: [
-    { name: "desktop-chromium", use: { ...devices["Desktop Chrome"] } },
-    { name: "mobile-chromium", use: { ...devices["Pixel 7"] } },
+    {
+      name: "desktop-chromium",
+      use: { ...devices["Desktop Chrome"] },
+      testIgnore: CATALOG_ADMIN_SPEC,
+    },
+    {
+      name: "mobile-chromium",
+      use: { ...devices["Pixel 7"] },
+      testIgnore: CATALOG_ADMIN_SPEC,
+    },
+    // Catalog administration publishes and edits products, which would change
+    // the listings the storefront tests count on. It therefore runs after
+    // them (one browser profile; its mobile checks set their own viewport)
+    // and removes everything it created.
+    {
+      name: "catalog-admin",
+      use: { ...devices["Desktop Chrome"] },
+      testMatch: CATALOG_ADMIN_SPEC,
+      dependencies: ["desktop-chromium", "mobile-chromium"],
+      // In order, in one worker: the spec cleans up its data in beforeAll.
+      fullyParallel: false,
+    },
   ],
   webServer: {
     command: `npm run start -- --port ${port}`,
@@ -48,6 +70,9 @@ export default defineConfig({
       APP_URL: baseURL,
       EMAIL_TRANSPORT: "file",
       EMAIL_OUTBOX_DIR,
+      // Uploaded product images go to a local, git-ignored directory.
+      STORAGE_PROVIDER: "local",
+      STORAGE_LOCAL_DIR: E2E_STORAGE_DIR,
     },
   },
 });

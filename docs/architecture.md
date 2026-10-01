@@ -260,8 +260,8 @@ Routes are listed in [routes.md](routes.md). Storefront rules are in
 - Displayed stock and price can therefore be at most 60 seconds old on cached
   pages. That is acceptable because checkout re-validates everything
   server-side (Milestone 8).
-- Admin changes (Milestone 7) and payments (Milestone 9) should call
-  `revalidatePath` for affected product, category and homepage paths.
+- Admin catalog changes revalidate these pages on demand since Milestone 7
+  (see below). Payments (Milestone 9) should do the same.
 - Cache Components (`cacheComponents`) is **not** enabled; this uses the
   established ISR model.
 - **Consequence:** `next build` prerenders the homepage and information pages
@@ -647,3 +647,262 @@ None added.
 ### Dependencies
 
 `better-auth` 1.7.7 and `resend` 6.31.0, both pinned exactly.
+
+## Milestone 7 — Product administration (2026-10-01)
+
+Admin routes are listed in [routes.md](routes.md); audit actions, redirects
+and image rows in [database.md](database.md). There were **no schema
+changes**: the Milestone 2 schema already had every field needed.
+
+### Layers
+
+| Layer                                                                | Module                                                                 |
+| -------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Form schemas (browser and server), slugs, SEK input parsing          | `src/lib/validation/catalog.ts`, `src/lib/slug.ts`, `src/lib/money.ts` |
+| Upload policy (types, sizes, dimensions)                             | `src/lib/validation/product-images.ts`                                 |
+| Storage abstraction and providers                                    | `src/lib/storage/*`                                                    |
+| Image decoding and normalisation (sharp)                             | `src/server/media/product-image.ts`                                    |
+| Catalog services: products, images, categories, sets, list queries   | `src/server/admin/catalog/*`                                           |
+| Redirect writes and lookups                                          | `src/server/catalog/redirects.ts`                                      |
+| Server actions (forms, images, delete)                               | `src/app/admin/(panel)/{products,categories,sets}/actions.ts`          |
+| Upload route handler                                                 | `src/app/api/admin/products/[id]/images/route.ts`                      |
+| Admin UI (React Hook Form client components, server-rendered pages)  | `src/components/admin/catalog/*`, `src/app/admin/(panel)/*`            |
+| Admin rules shown to staff (low stock, preorder reminders, warnings) | `src/server/domain/catalog-admin.ts`                                   |
+| SEO defaults shared by storefront pages and the admin search preview | `src/lib/seo/catalog-defaults.ts`                                      |
+
+Services take the Prisma client (and storage) as arguments, so the DB tests
+run the production code against the test database with in-memory storage.
+
+### Dependencies
+
+All four were verified against the npm registry on 2026-10-01 and pinned
+exactly. `npm audit` is unchanged (only the 4 known Prisma CLI findings).
+
+| Package               | Version | Why                                                                                                                                                                          |
+| --------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `react-hook-form`     | 7.89.0  | Admin forms (PROJECT.md §4). Peer `react ^19` is satisfied.                                                                                                                  |
+| `@hookform/resolvers` | 5.9.1   | `zodResolver` for the shared Zod 4 schemas (peer `zod ^4`). Used in `raw` mode, so the server receives the untransformed form values and parses them itself.                 |
+| `@vercel/blob`        | 2.8.0   | Production image storage (PROJECT.md §4, Vercel Blob default). Only `put`/`del` are used, behind `ObjectStorage`. Brings `undici` 6 and `@vercel/oidc`.                      |
+| `sharp`               | 0.35.5  | Already installed as Next.js's optional image dependency; now direct, because uploads are decoded and re-encoded on the server. Prebuilt binaries for Linux, Windows, macOS. |
+
+### Authorization
+
+- `canManageCatalog(role)` (OWNER and ADMIN) is the single rule; a future
+  role without catalog access only changes there. The admin menu shows the
+  catalog links when it holds, but hiding links is never the check.
+- **Pages** call `requireAdmin()` and render a 403 panel when the rule fails.
+- **Server actions** run through `asCatalogManager` (`requireCatalogManager`:
+  no session → login redirect; wrong role → Swedish error). Every argument is
+  validated (UUIDs, integers, arrays), and the form values again with the
+  shared schema.
+- **Services** re-load the acting administrator inside their transaction
+  (`SELECT … FOR SHARE`) and require an active account with catalog rights,
+  so a deactivation between the session check and the write is caught and
+  cannot commit concurrently.
+- **Upload route** checks, in this order and before reading the body: same
+  origin (`Origin` must equal `APP_URL`; the session cookie is also
+  `SameSite=Lax`), a valid session of an active administrator, the role, and
+  the declared and actual body size.
+- Unexpected errors are logged by error name only and shown as a generic
+  Swedish message. Prisma and provider details never reach the browser.
+
+### Products
+
+- **Status and publishing.** Status is chosen in the form (Utkast, Aktiv,
+  Kommer snart, Arkiverad). `publishedAt` is set the first time a product
+  becomes ACTIVE or COMING_SOON and is never reset or moved, so it keeps
+  meaning "first public" ("Nyheter", sitemap, redirect decisions).
+- **Archive, not delete.** A product can be deleted only if it was never
+  public and has no order lines, reservations or reviews (a mistaken draft).
+  Everything else is archived: not purchasable, not listed, and its page stays
+  as a `noindex` "Säljs inte längre" notice (Milestone 4 behaviour). The
+  service checks this under a row lock; the RESTRICT foreign keys are the
+  final guard.
+- **Validation decisions.**
+  - Price must be greater than 0 kr: a 0 kr price is almost certainly a typo
+    and cannot be charged through Stripe.
+  - Compare-at price must exceed the price (mirrors the CHECK constraint).
+  - SKUs are stored uppercase, so uniqueness is effectively case-insensitive.
+  - Prices are typed in kronor ("1 499,50") and parsed to öre with string
+    arithmetic, never floats.
+  - All product types can be chosen; V1 has no type-specific fields.
+- **Concurrent edits.** Stock uses compare-and-set. The form sends the stock
+  value it was loaded with, and a stock change is refused ("Lagersaldot har
+  ändrats till N …") if the stored value differs (another administrator, or
+  later a sale). An untouched stock field is never written. Other fields are
+  last-write-wins, which is acceptable for a small team and keeps the form
+  usable while sales change stock.
+- **Duplicates.** Slug and SKU are pre-checked inside the transaction and
+  reported on their fields; a unique-constraint race returns a generic field
+  error instead of a Prisma error.
+
+### Inventory and preorders
+
+- Administrators set `stockOnHand` (whole number 0–1 000 000). Each change is
+  audited as `UPDATE_PRODUCT_STOCK` with old and new values.
+- Reservations are not touched. The form and the list show reserved and
+  available-to-sell quantities, computed with the storefront rule.
+- **Low stock** in admin means available-to-sell ≤
+  `StoreSettings.lowStockThreshold` (the storefront's "Få kvar" threshold).
+  The list marks "Lågt lager" and "Slut", offers a filter, and shows a count
+  of published products with low stock.
+- **Preorders** keep the Milestone 5 rules: `isPreorder` stays authoritative
+  after the release date, and `stockOnHand` is the preorder allocation. The
+  form, the edit page and the list warn when a preorder's release date has
+  passed; nothing is changed automatically. Mixed preorder/in-stock checkout
+  remains a Milestone 8 decision.
+
+### Product images and storage
+
+- **Abstraction.** `ObjectStorage` (`put(key, bytes, contentType)`,
+  `delete(keys)`) is all that catalog code knows. Providers:
+  - `vercel-blob`: public store, `addRandomSuffix: false`,
+    `allowOverwrite: false`, one-year cache (objects are immutable). The
+    token is passed explicitly, never picked up from ambient credentials.
+  - `local`: files under `STORAGE_LOCAL_DIR` (default `.storage/`,
+    git-ignored), served by `GET /api/media/*` with strict key validation.
+    For development and E2E; refused on Vercel.
+  - `memory`: DB tests.
+- **Selection** (`STORAGE_PROVIDER`, validated at startup): `local` outside
+  Vercel, `vercel-blob` on Vercel. `BLOB_READ_WRITE_TOKEN` is required in
+  Vercel production. On a preview without it the store works and uploads fail
+  with "Bildlagringen är inte konfigurerad …".
+- **Keys** are generated by the server only:
+  `products/<productId>/<uuid>.<jpg|png|webp>`. Only such keys are ever
+  deleted from storage. The development seed's images (`seed/…`, served from
+  `/public`) are rows without stored objects.
+- **Validation pipeline** (nothing from the client is trusted):
+  1. body ≤ 4 MB plus multipart overhead, enforced while reading the stream;
+  2. format from magic bytes (JPEG, PNG, WebP only; SVG, GIF, HEIC and
+     everything else are refused);
+  3. the declared MIME type and the file extension must match the detected
+     format;
+  4. full decode by libvips with a 40-megapixel limit (decompression bombs,
+     corrupt files); animated images are refused; shortest side ≥ 300 px,
+     longest ≤ 8 000 px;
+  5. re-encode in the same format: EXIF orientation applied, all metadata
+     (camera, GPS) stripped, scaled to fit 2 400 px. The stored file's real
+     width and height are recorded.
+- **Why a route handler.** Uploads go to
+  `POST /api/admin/products/[id]/images`, one file per request. A server
+  action would buffer the whole body under a global size limit before any
+  check; the route handler authorizes first and reads with a hard limit. 4 MB
+  stays under Vercel's 4.5 MB function request limit.
+- **Consistency.** Upload: process → store → insert row (product row
+  locked, position = count, at most 12 images). If the insert fails, the
+  stored object is deleted again. Removal and product deletion delete rows
+  first and objects after commit; a failed object deletion is logged and
+  leaves only an unreferenced file, never a broken image.
+- **Order.** Positions are kept contiguous; reordering must list exactly the
+  product's images. Position 0 is the primary image everywhere (listings,
+  cart, product page, JSON-LD).
+- **Alt text** is optional; blank uses the product name (Milestone 4 rule).
+- `next.config.ts` lets `next/image` optimise only `/brand/**`,
+  `/api/media/products/**` and
+  `https://*.public.blob.vercel-storage.com/products/**`, never with query
+  strings.
+
+### Slug changes and redirects (PROJECT.md §61)
+
+- When the slug of a product that has been public (`publishedAt` set), or of
+  any category or set (their landing pages are always public), changes, the
+  old path is recorded as a permanent redirect in the same transaction.
+- Invariants (`src/server/catalog/redirects.ts`):
+  - redirects that pointed at the old path are re-pointed to the new one (no
+    chains);
+  - a redirect whose source is the new path is removed (no loops, e.g. when
+    renaming back);
+  - sources stay unique;
+  - a path that becomes live again (a new record with that slug) releases
+    its redirect.
+- Deleting a category or set redirects its URL to `/pokemon-tcg`, so an
+  indexed URL never silently turns into a 404.
+- **Serving.** Product, category and set pages look up the Redirect table
+  only when the slug has no live page, and then answer with
+  `permanentRedirect` (HTTP 308); otherwise a real 404. Live pages pay
+  nothing and no proxy-level database lookup is needed. This also activates
+  the seeded example redirect. A general redirect layer for other URL types
+  belongs to Milestone 13.
+- A never-published product can be renamed freely; no redirect is created.
+
+### Cache revalidation
+
+Milestone 4 left product pages and the homepage as ISR pages (60 s). Every
+successful catalog mutation (product, image, category or set; server actions
+and the upload route) now calls `revalidateCatalog()`:
+
+| Target                                                                     | Why                                                                               |
+| -------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `/`                                                                        | featured, new and upcoming sections, category tiles                               |
+| `/(store)/pokemon-tcg/[productSlug]` (pattern)                             | the product's own page, and every page's related-products rail and taxonomy links |
+| old and new product URL (literal)                                          | a renamed product's old URL serves its redirect immediately                       |
+| `/pokemon-tcg`, `/nyheter`, `/kommande`, `/sok`, category and set patterns | rendered per request today; included so they stay correct if cached later         |
+
+- Information pages and the store layout are not invalidated: they show no
+  catalog data, so their caching is unaffected.
+- Patterns include the `(store)` route group, because Next derives a page's
+  implicit cache tags from its route file path.
+- Pages are re-rendered on their next visit. E2E proves it: a price change,
+  a publish and the "featured" flag appear on cached pages well inside the
+  60 s window. With revalidation disabled the same tests fail (including a
+  cached 404 for a just-published product).
+
+### Admin UX
+
+- The product form has the PROJECT.md §54 sections: Grundinformation, Pris
+  och lager, Publicering och tillgänglighet, Bilder, Sökmotorer (SEO). Image
+  changes are saved immediately, independently of the form's save button.
+- Slugs are suggested from the name while creating. On a public record the
+  form explains that the old URL will redirect.
+- The SEO section shows character counts and a search-result preview built
+  with the same default rules as the storefront.
+- Feedback is Swedish: field errors next to inputs (from the browser or the
+  server), and a success or error message next to the save button
+  (`role="status"` / `role="alert"`).
+- The product list has search (name, SKU, slug), filters (status, category,
+  set, stock level), sorting and paging (50 per page). It is a table on
+  large screens and stacked cards on phones.
+
+### Testing
+
+- **Unit:** schemas, slugs, SEK parsing, storage keys and local storage, the
+  image pipeline (real images generated with sharp: EXIF/GPS stripping,
+  orientation, downscaling; SVG, GIF, text, mismatched type or extension,
+  corrupt, animated, too small, too large), revalidation targets, admin
+  rules, list parameters, SEO defaults, the upload route (origin, session,
+  size, roles, error hiding) and the media route.
+- **DB:** product create/update/delete with audit, stock compare-and-set,
+  publish/archive, redirects (chains, loops, never-published products),
+  history protection (orders, reservations, reviews) and list filters;
+  categories and sets (redirects, delete protection, display order); images
+  (upload, invalid file, storage failure, limit, reorder, alt text, removal,
+  primary image on the storefront); inactive and unknown administrators.
+- **E2E:** a separate `catalog-admin` Playwright project runs after the
+  storefront projects, because it publishes products. It uses `E2E-`/`e2e-`
+  prefixes and deletes its data before and after. It covers:
+  - access control, OWNER and ADMIN;
+  - the list, its filters and the phone layout;
+  - validation (browser and server);
+  - create, edit, publish, archive and delete;
+  - stale stock edits from a second administrator;
+  - homepage and product-page revalidation, slug redirects;
+  - preorder warnings;
+  - image upload, validation, reorder, alt text and removal, with the image
+    visible in the store;
+  - category and set management, and axe checks.
+- Two Milestone 6 E2E assertions listed the exact admin menu; they now
+  include the catalog links (ADMIN still has no "Administratörer").
+
+### Remaining decisions and limits
+
+- **Production storage:** create a Vercel Blob store and connect it to the
+  project (this sets `BLOB_READ_WRITE_TOKEN`). Decide whether previews share
+  it or use a separate store (Milestone 15).
+- **4 MB per image.** Larger photos must be resized before upload. Direct
+  browser-to-Blob uploads would lift the limit but validate only after
+  storing; not needed for V1.
+- **Orphaned objects** can remain if a storage deletion fails. A periodic
+  cleanup comparing stored keys with `product_images` can be added later.
+- **Audit log viewing** in admin is not built yet (entries are written).
+- Deleting a category or set redirects its URL to `/pokemon-tcg`; the owner
+  may prefer another target in specific cases.

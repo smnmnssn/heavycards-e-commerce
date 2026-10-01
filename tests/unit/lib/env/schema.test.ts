@@ -22,6 +22,7 @@ describe("parseServerEnv", () => {
         transport: "console",
         from: "HeavyCards <no-reply@heavycards.invalid>",
       },
+      storage: { provider: "local", directory: ".storage" },
     });
   });
 
@@ -187,6 +188,7 @@ describe("parseServerEnv: email", () => {
       NODE_ENV: "production",
       VERCEL_ENV: "production",
       APP_URL: "https://heavycards.se",
+      BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_test",
     };
     expect(() => parse(production)).toThrow(/RESEND_API_KEY and EMAIL_FROM/);
     expect(
@@ -235,6 +237,62 @@ describe("parseServerEnv: email", () => {
     ).toThrow(
       expect.objectContaining({
         message: expect.not.stringContaining("re_secret_123"),
+      }),
+    );
+  });
+});
+
+describe("parseServerEnv: image storage", () => {
+  it("uses local files outside Vercel, in a configurable directory", () => {
+    expect(parse().storage).toEqual({
+      provider: "local",
+      directory: ".storage",
+    });
+    expect(parse({ STORAGE_LOCAL_DIR: ".e2e-storage" }).storage).toEqual({
+      provider: "local",
+      directory: ".e2e-storage",
+    });
+  });
+
+  it("defaults to Vercel Blob on Vercel and refuses local storage there", () => {
+    const preview = {
+      NODE_ENV: "production",
+      VERCEL_ENV: "preview",
+      VERCEL_URL: "heavycards-abc123.vercel.app",
+    };
+    // Previews without a token keep working; uploads then fail clearly.
+    expect(parse(preview).storage).toEqual({
+      provider: "vercel-blob",
+      blobToken: null,
+    });
+    expect(() => parse({ ...preview, STORAGE_PROVIDER: "local" })).toThrow(
+      /local development and tests only/,
+    );
+  });
+
+  it("requires a Blob token in Vercel production and never echoes it", () => {
+    const production = {
+      NODE_ENV: "production",
+      VERCEL_ENV: "production",
+      APP_URL: "https://heavycards.se",
+      EMAIL_TRANSPORT: "resend",
+      RESEND_API_KEY: "re_test",
+      EMAIL_FROM: "HeavyCards <a@b.se>",
+    };
+    expect(() => parse(production)).toThrow(/BLOB_READ_WRITE_TOKEN: required/);
+    expect(
+      parse({ ...production, BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_secret" })
+        .storage,
+    ).toEqual({ provider: "vercel-blob", blobToken: "vercel_blob_rw_secret" });
+    expect(() =>
+      parse({
+        ...production,
+        STORAGE_PROVIDER: "bogus",
+        BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_secret",
+      }),
+    ).toThrow(
+      expect.objectContaining({
+        message: expect.not.stringContaining("vercel_blob_rw_secret"),
       }),
     );
   });

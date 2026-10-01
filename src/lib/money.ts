@@ -83,6 +83,40 @@ export function vatPortionOfGross(
   return Number(vat);
 }
 
+/**
+ * Parses a kronor amount typed by an administrator into öre, using string
+ * arithmetic only (no floats). Accepts "1499", "1 499", "1499,50",
+ * "1499.5" and an optional "kr" suffix; spaces (including the non-breaking
+ * spaces sv-SE formatting produces) are ignored. Returns null for anything
+ * else: negative values, more than two decimals, letters, or amounts above
+ * MAX_AMOUNT.
+ */
+export function parseSekInput(input: string): number | null {
+  const compact = input
+    .replace(/[\s  ]/g, "")
+    .replace(/kr$/i, "")
+    .replace(/:-$/, "");
+  const match = /^(\d{1,8})(?:[.,](\d{1,2}))?$/.exec(compact);
+  if (!match) return null;
+  const kronor = Number(match[1]);
+  const ore = Number((match[2] ?? "").padEnd(2, "0"));
+  const amount = kronor * 100 + ore;
+  return isValidAmount(amount) ? amount : null;
+}
+
+/**
+ * Formats öre for an admin input field: "1499" for whole kronor, "1499,50"
+ * otherwise. The inverse of parseSekInput.
+ */
+export function formatSekInput(amount: number): string {
+  assertValidAmount(amount);
+  const kronor = Math.floor(amount / 100);
+  const ore = amount % 100;
+  return ore === 0
+    ? String(kronor)
+    : `${kronor},${String(ore).padStart(2, "0")}`;
+}
+
 const sekFormatter = new Intl.NumberFormat("sv-SE", {
   style: "currency",
   currency: "SEK",

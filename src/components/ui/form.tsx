@@ -39,6 +39,29 @@ export function Textarea({ className, ...props }: ComponentProps<"textarea">) {
   );
 }
 
+export function Select({ className, ...props }: ComponentProps<"select">) {
+  return (
+    <select
+      className={cn(fieldBase, "h-11 cursor-pointer", className)}
+      {...props}
+    />
+  );
+}
+
+/** Native checkbox: 20px box inside a 44px row from its label. */
+export function Checkbox({ className, ...props }: ComponentProps<"input">) {
+  return (
+    <input
+      type="checkbox"
+      className={cn(
+        "size-5 shrink-0 cursor-pointer accent-foreground focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-not-allowed",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
 export function Label({ className, ...props }: ComponentProps<"label">) {
   return (
     <label

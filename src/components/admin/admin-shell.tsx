@@ -6,8 +6,14 @@ import { BrandMark } from "@/components/store/brand-mark";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Container } from "@/components/ui/container";
-import type { AdminIdentity } from "@/lib/auth/authorization";
-import { ADMIN_HOME_PATH, ADMIN_USERS_PATH } from "@/lib/auth/routes";
+import { canManageCatalog, type AdminIdentity } from "@/lib/auth/authorization";
+import {
+  ADMIN_CATEGORIES_PATH,
+  ADMIN_HOME_PATH,
+  ADMIN_PRODUCTS_PATH,
+  ADMIN_SETS_PATH,
+  ADMIN_USERS_PATH,
+} from "@/lib/auth/routes";
 import { siteConfig } from "@/lib/config/site";
 
 import { AdminNav, type AdminNavItem } from "./admin-nav";
@@ -27,6 +33,13 @@ export function AdminShell({
   children: ReactNode;
 }) {
   const items: AdminNavItem[] = [{ href: ADMIN_HOME_PATH, label: "Översikt" }];
+  if (canManageCatalog(admin)) {
+    items.push(
+      { href: ADMIN_PRODUCTS_PATH, label: "Produkter" },
+      { href: ADMIN_CATEGORIES_PATH, label: "Kategorier" },
+      { href: ADMIN_SETS_PATH, label: "Pokémon-set" },
+    );
+  }
   if (admin.role === "OWNER") {
     items.push({ href: ADMIN_USERS_PATH, label: "Administratörer" });
   }

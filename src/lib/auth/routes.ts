@@ -6,6 +6,9 @@ export const ADMIN_FORGOT_PASSWORD_PATH = "/admin/forgot-password";
 export const ADMIN_RESET_PASSWORD_PATH = "/admin/reset-password";
 export const ADMIN_INVITE_PATH = "/admin/invite";
 export const ADMIN_USERS_PATH = "/admin/users";
+export const ADMIN_PRODUCTS_PATH = "/admin/products";
+export const ADMIN_CATEGORIES_PATH = "/admin/categories";
+export const ADMIN_SETS_PATH = "/admin/sets";
 
 /**
  * Set by the proxy on admin requests: the path being rendered, so a login

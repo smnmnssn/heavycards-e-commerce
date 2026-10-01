@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
 
 import { Breadcrumbs } from "@/components/store/breadcrumbs";
 import { SectionHeading } from "@/components/store/headings";
@@ -22,8 +21,13 @@ import { formatIsoDate } from "@/lib/dates";
 import { db } from "@/lib/db/client";
 import { env } from "@/lib/env/server";
 import { absoluteUrl, breadcrumbJsonLd } from "@/lib/seo/json-ld";
-import { excerpt, firstText, pageMetadata } from "@/lib/seo/metadata";
+import {
+  productMetaDescription,
+  productSeoTitle,
+} from "@/lib/seo/catalog-defaults";
+import { pageMetadata } from "@/lib/seo/metadata";
 import { presentationContext } from "@/server/catalog/listing";
+import { notFoundUnlessMoved } from "@/server/catalog/not-found";
 import {
   imageAlt,
   productPath,
@@ -40,7 +44,8 @@ import { getAvailability } from "@/server/domain/catalog";
 
 // Rendered on first visit, then served from cache and refreshed at most every
 // 60 seconds. Checkout re-validates price and stock server-side (Milestone 8),
-// and admin edits will revalidate the page immediately (Milestone 7).
+// and admin catalog edits revalidate it immediately
+// (src/server/admin/catalog/revalidation.ts).
 export const revalidate = 60;
 
 export function generateStaticParams() {
@@ -55,16 +60,11 @@ const productTypeLabels: Record<ProductType, string> = {
   OTHER: "Övrigt",
 };
 
-function metaDescription(product: ProductDetail): string {
-  return (
-    firstText(product.seoDescription, product.shortDescription) ??
-    (product.description
-      ? excerpt(product.description)
-      : `Köp ${product.name} hos HeavyCards${
-          product.pokemonSet ? `, från setet ${product.pokemonSet.name}` : ""
-        }. Priser inklusive moms och leverans inom Sverige.`)
-  );
-}
+const metaDescription = (product: ProductDetail) =>
+  productMetaDescription({
+    ...product,
+    setName: product.pokemonSet?.name ?? null,
+  });
 
 export async function generateMetadata({
   params,
@@ -75,7 +75,7 @@ export async function generateMetadata({
 
   const firstImage = product.images[0];
   return pageMetadata({
-    title: firstText(product.seoTitle) ?? product.name,
+    title: productSeoTitle(product),
     description: metaDescription(product),
     path: productPath(product.slug),
     // Discontinued products keep their page for existing links, unindexed.
@@ -98,7 +98,7 @@ export default async function ProductPage({
 }: PageProps<"/pokemon-tcg/[productSlug]">) {
   const { productSlug } = await params;
   const product = await getProductPage(productSlug);
-  if (!product) notFound();
+  if (!product) return notFoundUnlessMoved(productPath(productSlug));
 
   const now = new Date();
   const context = await presentationContext(now);

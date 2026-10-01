@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 
 import { ROLE_LABELS } from "@/components/admin/roles";
 import { requireAdmin } from "@/lib/auth/session";
@@ -11,8 +12,25 @@ const stockholmTime = new Intl.DateTimeFormat("sv-SE", {
   timeZone: "Europe/Stockholm",
 });
 
+const catalogLinks = [
+  {
+    href: "/admin/products",
+    label: "Produkter",
+    text: "Pris, lager, publicering och bilder",
+  },
+  {
+    href: "/admin/categories",
+    label: "Kategorier",
+    text: "Kategorisidor och ordning",
+  },
+  {
+    href: "/admin/sets",
+    label: "Pokémon-set",
+    text: "Setsidor och släppdatum",
+  },
+];
+
 const upcoming = [
-  "Produkter, kategorier och set",
   "Ordrar och leveranser",
   "Recensioner",
   "Butiksinställningar",
@@ -31,6 +49,27 @@ export default async function AdminDashboardPage() {
           gäller till {stockholmTime.format(admin.sessionExpiresAt)}.
         </p>
       </div>
+
+      <section aria-labelledby="katalog">
+        <h2 id="katalog" className="type-h3">
+          Katalog
+        </h2>
+        <ul className="mt-4 grid gap-3 sm:grid-cols-3">
+          {catalogLinks.map((link) => (
+            <li key={link.href}>
+              <Link
+                href={link.href}
+                className="block h-full rounded-lg border border-border bg-background p-5 transition-colors hover:border-foreground"
+              >
+                <span className="font-semibold">{link.label}</span>
+                <span className="mt-1 block text-sm text-muted-foreground">
+                  {link.text}
+                </span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </section>
 
       <section
         aria-labelledby="kommande-funktioner"

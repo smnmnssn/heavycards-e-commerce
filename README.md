@@ -12,15 +12,16 @@ server-side logic. Market: Sweden only, Swedish UI, SEK.
 
 ## Status
 
-| Milestone                 | State  |
-| ------------------------- | ------ |
-| 1 — Repository foundation | Done   |
-| 2 — Database foundation   | Done   |
-| 3 — Storefront design     | Done   |
-| 4 — Catalog               | Done   |
-| 5 — Cart                  | Done   |
-| 6 — Admin authentication  | Review |
-| 7–15                      | —      |
+| Milestone                  | State  |
+| -------------------------- | ------ |
+| 1 — Repository foundation  | Done   |
+| 2 — Database foundation    | Done   |
+| 3 — Storefront design      | Done   |
+| 4 — Catalog                | Done   |
+| 5 — Cart                   | Done   |
+| 6 — Admin authentication   | Done   |
+| 7 — Product administration | Review |
+| 8–15                       | —      |
 
 Sections below marked _(later milestone)_ are placeholders and are filled in as
 those features land.
@@ -39,7 +40,9 @@ Versions are pinned exactly in `package.json`, and `package-lock.json` is commit
 | Quality    | ESLint 9 (`eslint-config-next`), Prettier 3                                                |
 | Tests      | Vitest 5 (unit/domain/components), Playwright 1.63 + axe (E2E, desktop + mobile Chromium)  |
 | Auth/email | Better Auth 1.7.7 (admin authentication), Resend 6.31 (admin emails)                       |
-| Planned    | Stripe Checkout, Vercel Blob, React Hook Form                                              |
+| Admin      | React Hook Form 7.89 with `@hookform/resolvers` 5.9 (shared Zod schemas)                   |
+| Images     | Vercel Blob 2.8 behind `src/lib/storage` (local files in development), sharp 0.35          |
+| Planned    | Stripe Checkout                                                                            |
 
 ## Local setup
 
@@ -128,13 +131,23 @@ APP_URL=http://localhost:3100 npm run build
 npm run test:e2e
 ```
 
-Every E2E test runs on a desktop and a mobile (Pixel 7) Chromium profile.
+Every storefront and admin E2E test runs on a desktop and a mobile (Pixel 7)
+Chromium profile.
 
 The admin tests sign in as the seeded administrators, so `SEED_ADMIN_PASSWORD`
 must be set (in `.env.local`) and `npm run db:seed` must have run with it. The
 test server writes emails to `.e2e-outbox/` instead of sending them. Tests that
 invite administrators create `e2e-…@heavycards.test` accounts in the
 development database; they are deactivated by the test and can be ignored.
+
+The catalog administration tests (`e2e/admin-catalog.spec.ts`) publish
+products, so they run as a separate `catalog-admin` project after the
+storefront projects have finished. They create products, categories and sets
+with an `E2E-`/`e2e-` prefix in the development database and delete them
+(and their uploaded images in `.e2e-storage/`) before and after the run. This
+project uses desktop Chromium; its phone-layout checks open a Pixel 7
+context. To run only them:
+`npx playwright test --project catalog-admin --no-deps`.
 
 CI (`.github/workflows/ci.yml`) runs on every push to `main` and on pull requests:
 
@@ -157,7 +170,8 @@ src/
   app/            routes: (store)/ public storefront, api/ route handlers, admin/ (later)
   components/     store/, admin/, ui/ (shadcn/ui components)
   lib/            framework-level modules: env, config, auth, db, stripe, email, storage, seo, validation
-  server/         domain/ rules, catalog/ presenters, data/ database queries (server-only)
+  server/         domain/ rules, catalog/ presenters and redirects, data/ database queries,
+                  admin/ services (administrators, catalog), media/ image processing
   types/          shared TypeScript types
   generated/      Prisma client (generated, git-ignored)
   instrumentation.ts
@@ -179,6 +193,36 @@ recolour it.
 The design system (tokens, typography, components, accessibility) is described
 in [docs/design-system.md](docs/design-system.md). In development, open
 http://localhost:3000/designsystem for a visual reference of all primitives.
+
+## Product images
+
+Product images are uploaded in `/admin` and stored in object storage, never
+in Git. Application code only uses the small interface in `src/lib/storage`;
+the provider is chosen with `STORAGE_PROVIDER` (validated at startup):
+
+| Provider      | Where                                                                                     | Used for                                                       |
+| ------------- | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `local`       | files in `STORAGE_LOCAL_DIR` (default `.storage/`, git-ignored), served by `/api/media/*` | default outside Vercel: development and E2E; refused on Vercel |
+| `vercel-blob` | a public Vercel Blob store                                                                | default (and required) on Vercel                               |
+
+**Local development** needs no account or configuration: uploads land in
+`.storage/`.
+
+**Vercel (Milestone 15 checklist):**
+
+1. In the Vercel project, create a Blob store (Storage → Blob) with public
+   access and connect it to the project. Vercel then sets
+   `BLOB_READ_WRITE_TOKEN` for the selected environments.
+2. Production fails to start without `BLOB_READ_WRITE_TOKEN`. A preview
+   without it keeps working, but uploads show "Bildlagringen är inte
+   konfigurerad".
+3. To try real Blob uploads locally, set `STORAGE_PROVIDER=vercel-blob` and
+   `BLOB_READ_WRITE_TOKEN` (a development store's token) in `.env.local`.
+
+Uploads accept JPEG, PNG and WebP up to 4 MB (at least 300 px on the
+shortest side). The server checks the real file contents, re-encodes the
+image (correct orientation, camera/GPS metadata removed, at most 2 400 px)
+and records its dimensions. Details: docs/architecture.md → Milestone 7.
 
 ## Database, migrations and seed
 
@@ -245,6 +289,11 @@ Administrators sign in at `/admin/login`. There is no public sign-up. Roles:
 
 - **OWNER**: everything, including administrator management at `/admin/users`.
 - **ADMIN**: the admin area except administrator management.
+
+Both roles manage the catalog: products (prices, stock, publishing, images,
+SEO) at `/admin/products`, categories at `/admin/categories` and Pokémon sets
+at `/admin/sets`. Normal store operation needs no Prisma Studio or database
+access. Every catalog change is written to the audit log.
 
 **First OWNER (production or a fresh database).** Run once, against the target
 database, from a trusted machine:

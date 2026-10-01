@@ -8,6 +8,10 @@
 /test-results/
 /playwright/.cache/
 /.e2e-outbox/
+/.e2e-storage/
+
+# locally stored product images (STORAGE_PROVIDER=local); never committed
+/.storage/
 
 # next.js
 /.next/

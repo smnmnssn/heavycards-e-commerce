@@ -2,6 +2,7 @@ import type {
   ProductCardBadge,
   ProductCardData,
 } from "@/components/store/product-card";
+import { productPath } from "@/lib/catalog-paths";
 import { formatIsoDate, type IsoDate } from "@/lib/dates";
 import type { ProductSummary } from "@/server/data/catalog-queries";
 import {
@@ -25,9 +26,7 @@ export type PresentationContext = {
   lowStockThreshold: number;
 };
 
-export function productPath(slug: string): string {
-  return `/pokemon-tcg/${slug}`;
-}
+export { productPath } from "@/lib/catalog-paths";
 
 /** Admin alt text wins; otherwise a sensible default from the name (§67). */
 export function imageAlt(

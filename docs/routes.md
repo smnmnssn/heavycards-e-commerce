@@ -23,6 +23,9 @@ All storefront routes below exist as of Milestone 4 (except `/review/[token]`).
 
 Unknown product, category and set slugs, draft or unpublished products, and
 page numbers beyond the last page return HTTP 404 with the store's 404 page.
+A product, category or set URL that changed (renamed slug, or a deleted
+category or set) answers with a permanent redirect (HTTP 308) to its new
+location instead (Milestone 7; see database.md → Redirects).
 
 ### Listing parameters
 
@@ -54,8 +57,8 @@ are ignored rather than rejected.
   BreadcrumbList JSON-LD.
 - Product pages also have basic Product/Offer JSON-LD, with AggregateRating
   and reviews from approved reviews only.
-- The sitemap, redirects and full structured data are completed in
-  Milestone 13.
+- Catalog slug redirects exist since Milestone 7. The sitemap, any wider
+  redirect handling and full structured data are completed in Milestone 13.
 
 ### Product states on the storefront
 
@@ -94,19 +97,26 @@ Swedish characters are transliterated in slugs (å/ä → a, ö → o).
 
 ## Admin and API
 
-| Route                    | Purpose                                                                                   | Milestone |
-| ------------------------ | ----------------------------------------------------------------------------------------- | --------- |
-| `/admin/login`           | Sign-in (public)                                                                          | 6         |
-| `/admin/forgot-password` | Request a password-reset link (public)                                                    | 6         |
-| `/admin/reset-password`  | Set a new password with `?token=` (public)                                                | 6         |
-| `/admin/invite`          | Accept an invitation with `?token=` (public)                                              | 6         |
-| `/admin`                 | Dashboard (signed in)                                                                     | 6         |
-| `/admin/users`           | Administrator management (OWNER only)                                                     | 6         |
-| `/admin/**`              | Further admin areas (signed in)                                                           | 7+        |
-| `/api/auth/*`            | Better Auth: sign-in, sign-out, get-session, password reset only; every other path is 404 | 6         |
-| `/api/health`            | Health check                                                                              | 1–2       |
-| `/api/cart`              | POST: current data for cart product IDs (read-only)                                       | 5         |
-| `/api/stripe/webhook`    | Stripe webhook                                                                            | 9         |
+| Route                             | Purpose                                                                                   | Milestone |
+| --------------------------------- | ----------------------------------------------------------------------------------------- | --------- |
+| `/admin/login`                    | Sign-in (public)                                                                          | 6         |
+| `/admin/forgot-password`          | Request a password-reset link (public)                                                    | 6         |
+| `/admin/reset-password`           | Set a new password with `?token=` (public)                                                | 6         |
+| `/admin/invite`                   | Accept an invitation with `?token=` (public)                                              | 6         |
+| `/admin`                          | Dashboard (signed in)                                                                     | 6         |
+| `/admin/users`                    | Administrator management (OWNER only)                                                     | 6         |
+| `/admin/products`                 | Product list: search, filters, low stock (OWNER, ADMIN)                                   | 7         |
+| `/admin/products/new`             | Create a product                                                                          | 7         |
+| `/admin/products/[id]`            | Edit a product: content, price, stock, status, images, SEO; delete only unused drafts     | 7         |
+| `/admin/categories`               | Category list; `/new` and `/[id]` create and edit (delete only when unused)               | 7         |
+| `/admin/sets`                     | Pokémon-set list; `/new` and `/[id]` create and edit (delete only when unused)            | 7         |
+| `/admin/**`                       | Further admin areas (signed in)                                                           | 8+        |
+| `/api/auth/*`                     | Better Auth: sign-in, sign-out, get-session, password reset only; every other path is 404 | 6         |
+| `/api/health`                     | Health check                                                                              | 1–2       |
+| `/api/cart`                       | POST: current data for cart product IDs (read-only)                                       | 5         |
+| `/api/admin/products/[id]/images` | POST: upload one product image (same origin, signed-in OWNER/ADMIN, ≤ 4 MB)               | 7         |
+| `/api/media/*`                    | GET: images stored by the local storage provider (development/E2E only; 404 otherwise)    | 7         |
+| `/api/stripe/webhook`             | Stripe webhook                                                                            | 9         |
 
 `/admin/**` and `/api/**` send `X-Robots-Tag: noindex, nofollow` (next.config.ts).
 `/admin/**` also sends `Referrer-Policy: no-referrer`, because invitation and

@@ -8,8 +8,14 @@ import { JsonLdScript } from "@/components/store/json-ld";
 import { ProductListing } from "@/components/store/product-listing";
 import { ButtonLink } from "@/components/ui/button";
 import { Container } from "@/components/ui/container";
+import { categoryPath } from "@/lib/catalog-paths";
 import { env } from "@/lib/env/server";
 import { breadcrumbJsonLd } from "@/lib/seo/json-ld";
+import {
+  categoryFallbackDescription,
+  categoryMetaDescription,
+  categorySeoTitle,
+} from "@/lib/seo/catalog-defaults";
 import { excerpt, firstText, pageMetadata } from "@/lib/seo/metadata";
 import {
   loadFilterOptions,
@@ -17,15 +23,13 @@ import {
   sanitizeFilters,
   toOptions,
 } from "@/server/catalog/listing";
+import { notFoundUnlessMoved } from "@/server/catalog/not-found";
 import { getCategory } from "@/server/data/catalog";
 import {
   listingHref,
   listingSeo,
   parseListingParams,
 } from "@/server/domain/catalog-params";
-
-const categoryDescription = (name: string) =>
-  `${name} för Pokémon TCG hos HeavyCards. Förseglade produkter med priser inklusive moms och leverans inom Sverige.`;
 
 export async function generateMetadata({
   params,
@@ -40,10 +44,8 @@ export async function generateMetadata({
     parseListingParams(await searchParams),
   );
   return pageMetadata({
-    title: firstText(category.seoTitle) ?? `${category.name} – Pokémon TCG`,
-    description:
-      firstText(category.seoDescription, category.description) ??
-      categoryDescription(category.name),
+    title: categorySeoTitle(category),
+    description: categoryMetaDescription(category),
     path: seo.canonical,
     index: seo.index,
   });
@@ -55,7 +57,7 @@ export default async function CategoryPage({
 }: PageProps<"/kategori/[slug]">) {
   const { slug } = await params;
   const category = await getCategory(slug);
-  if (!category) notFound();
+  if (!category) return notFoundUnlessMoved(categoryPath(slug));
 
   const now = new Date();
   const path = `/kategori/${slug}`;
@@ -87,7 +89,8 @@ export default async function CategoryPage({
         eyebrow="Kategori"
         title={category.name}
         lead={excerpt(
-          firstText(category.description) ?? categoryDescription(category.name),
+          firstText(category.description) ??
+            categoryFallbackDescription(category.name),
           400,
         )}
       />

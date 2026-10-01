@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { cache } from "react";
 
 import {
+  canManageCatalog,
   ForbiddenError,
   isOwner,
   resolveAdminSession,
@@ -45,6 +46,18 @@ export async function requireOwner(): Promise<AdminIdentity> {
   const admin = await requireAdmin();
   if (!isOwner(admin)) {
     throw new ForbiddenError("Endast ägare (OWNER) har behörighet.");
+  }
+  return admin;
+}
+
+/**
+ * Requires an active administrator allowed to manage the catalog. Redirects
+ * anonymous visitors to the login page and throws ForbiddenError otherwise.
+ */
+export async function requireCatalogManager(): Promise<AdminIdentity> {
+  const admin = await requireAdmin();
+  if (!canManageCatalog(admin)) {
+    throw new ForbiddenError("Behörighet saknas för katalogen.");
   }
   return admin;
 }

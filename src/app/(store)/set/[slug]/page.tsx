@@ -8,9 +8,15 @@ import { JsonLdScript } from "@/components/store/json-ld";
 import { ProductListing } from "@/components/store/product-listing";
 import { ButtonLink } from "@/components/ui/button";
 import { Container } from "@/components/ui/container";
+import { setPath } from "@/lib/catalog-paths";
 import { formatIsoDate, stockholmToday } from "@/lib/dates";
 import { env } from "@/lib/env/server";
 import { breadcrumbJsonLd } from "@/lib/seo/json-ld";
+import {
+  setFallbackDescription,
+  setMetaDescription,
+  setSeoTitle,
+} from "@/lib/seo/catalog-defaults";
 import { excerpt, firstText, pageMetadata } from "@/lib/seo/metadata";
 import {
   loadFilterOptions,
@@ -18,15 +24,13 @@ import {
   sanitizeFilters,
   toOptions,
 } from "@/server/catalog/listing";
+import { notFoundUnlessMoved } from "@/server/catalog/not-found";
 import { getSet } from "@/server/data/catalog";
 import {
   listingHref,
   listingSeo,
   parseListingParams,
 } from "@/server/domain/catalog-params";
-
-const setDescription = (name: string) =>
-  `Förseglade produkter från Pokémon TCG-setet ${name} hos HeavyCards: booster boxes, Elite Trainer Boxes, booster packs och mer.`;
 
 export async function generateMetadata({
   params,
@@ -41,10 +45,8 @@ export async function generateMetadata({
     parseListingParams(await searchParams),
   );
   return pageMetadata({
-    title: firstText(set.seoTitle) ?? `${set.name} – Pokémon TCG-set`,
-    description:
-      firstText(set.seoDescription, set.description) ??
-      setDescription(set.name),
+    title: setSeoTitle(set),
+    description: setMetaDescription(set),
     path: seo.canonical,
     index: seo.index,
   });
@@ -56,7 +58,7 @@ export default async function SetPage({
 }: PageProps<"/set/[slug]">) {
   const { slug } = await params;
   const set = await getSet(slug);
-  if (!set) notFound();
+  if (!set) return notFoundUnlessMoved(setPath(slug));
 
   const now = new Date();
   const path = `/set/${slug}`;
@@ -100,7 +102,7 @@ export default async function SetPage({
             )}
             <span className="mt-2 block">
               {excerpt(
-                firstText(set.description) ?? setDescription(set.name),
+                firstText(set.description) ?? setFallbackDescription(set.name),
                 400,
               )}
             </span>

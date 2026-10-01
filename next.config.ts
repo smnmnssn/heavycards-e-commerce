@@ -31,6 +31,23 @@ const adminHeaders = [
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  images: {
+    // Only our own image sources are optimized (src/lib/storage):
+    // development seed images, locally stored uploads (STORAGE_PROVIDER=local)
+    // and public Vercel Blob stores. Query strings are never accepted.
+    localPatterns: [
+      { pathname: "/brand/**", search: "" },
+      { pathname: "/api/media/products/**", search: "" },
+    ],
+    remotePatterns: [
+      {
+        protocol: "https",
+        hostname: "*.public.blob.vercel-storage.com",
+        pathname: "/products/**",
+        search: "",
+      },
+    ],
+  },
   async headers() {
     return [
       { source: "/:path*", headers: securityHeaders },

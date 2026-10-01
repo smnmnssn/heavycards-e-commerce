@@ -52,3 +52,11 @@ export async function resolveAdminSession(
 }
 
 export const isOwner = (admin: AdminIdentity) => admin.role === "OWNER";
+
+/**
+ * Catalog management (products, inventory, images, categories, Pokémon sets)
+ * is open to both roles (PROJECT.md §50). Kept as a named rule so a future
+ * role without catalog access only needs a change here.
+ */
+export const canManageCatalog = (admin: { role: AdminRole }) =>
+  admin.role === "OWNER" || admin.role === "ADMIN";
