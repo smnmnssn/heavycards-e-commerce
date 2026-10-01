@@ -12,6 +12,10 @@ import {
   type AdminProductListParams,
   type AdminSort,
 } from "./product-list-params";
+import {
+  holdingReservationSql,
+  holdingReservationWhere,
+} from "@/server/data/reservations";
 
 /*
  * Read queries for the admin catalog. Like the storefront queries they take
@@ -140,7 +144,7 @@ export async function listAdminProducts(
     LEFT JOIN LATERAL (
       SELECT COALESCE(SUM(r.quantity), 0)::int AS reserved
       FROM inventory_reservations r
-      WHERE r.product_id = p.id AND r.status = 'ACTIVE' AND r.expires_at > ${now}
+      WHERE r.product_id = p.id AND ${holdingReservationSql(now)}
     ) res ON TRUE
     LEFT JOIN LATERAL (
       SELECT i.url FROM product_images i
@@ -163,7 +167,7 @@ export async function listAdminProducts(
       LEFT JOIN LATERAL (
         SELECT COALESCE(SUM(r.quantity), 0)::int AS reserved
         FROM inventory_reservations r
-        WHERE r.product_id = p.id AND r.status = 'ACTIVE' AND r.expires_at > ${now}
+        WHERE r.product_id = p.id AND ${holdingReservationSql(now)}
       ) res ON TRUE
       WHERE ${where}
     `;
@@ -266,7 +270,7 @@ export async function getAdminProduct(
   if (!product) return null;
 
   const reserved = await client.inventoryReservation.aggregate({
-    where: { productId: id, status: "ACTIVE", expiresAt: { gt: now } },
+    where: { productId: id, ...holdingReservationWhere(now) },
     _sum: { quantity: true },
   });
   const { _count, releaseDate, ...rest } = product;

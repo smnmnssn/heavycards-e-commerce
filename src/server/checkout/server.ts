@@ -22,7 +22,7 @@ export function getCheckoutGateway(): CheckoutGateway | null {
   if (config.gateway === "stripe" && !config.secretKey) return null;
   globalForCheckout.checkoutGateway ??=
     config.gateway === "fake"
-      ? new FakeCheckoutGateway()
+      ? new FakeCheckoutGateway(config.stateDir)
       : StripeCheckoutGateway.fromSecretKey(config.secretKey!);
   return globalForCheckout.checkoutGateway;
 }

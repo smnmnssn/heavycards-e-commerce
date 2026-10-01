@@ -21,8 +21,9 @@ server-side logic. Market: Sweden only, Swedish UI, SEK.
 | 5 — Cart                   | Done   |
 | 6 — Admin authentication   | Done   |
 | 7 — Product administration | Done   |
-| 8 — Checkout and inventory | Review |
-| 9–15                       | —      |
+| 8 — Checkout and inventory | Done   |
+| 9 — Stripe webhooks        | Review |
+| 10–15                      | —      |
 
 Sections below marked _(later milestone)_ are placeholders and are filled in as
 those features land.
@@ -159,6 +160,13 @@ project. The test server uses the fake payment gateway
 and after the run, so the seeded catalog never gains reservations. To run only
 them: `npx playwright test --project checkout --no-deps`.
 
+Payment outcomes are tested the same way, without live Stripe: the fake
+gateway keeps its sessions as JSON files in `.e2e-stripe/`
+(`FAKE_STRIPE_STATE_DIR`), a test edits a file to play "the customer paid" (or
+"the session expired", "the delayed payment failed") and then sends a
+correctly signed event to `/api/stripe/webhook` with the local-only secret in
+`e2e/storage-dir.ts`.
+
 CI (`.github/workflows/ci.yml`) runs on every push to `main` and on pull requests:
 
 - `npm ci`, format check, lint, typecheck and unit tests;
@@ -276,7 +284,7 @@ production and against non-local databases unless
 
 Customers pay on Stripe Hosted Checkout; HeavyCards never sees card data. The
 flow, reservations and idempotency are described in
-[docs/architecture.md](docs/architecture.md) → Milestone 8.
+[docs/architecture.md](docs/architecture.md) → Milestones 8 and 9.
 
 **Keys.** `STRIPE_SECRET_KEY` is a secret or restricted key from the Stripe
 Dashboard (Developers → API keys). Use **test-mode** keys (`sk_test_…` /
@@ -284,13 +292,25 @@ Dashboard (Developers → API keys). Use **test-mode** keys (`sk_test_…` /
 refuses live keys outside Vercel production and requires a live key there, so
 test and live credentials are never mixed. Without a key the store still runs;
 "Till kassan" then shows "Det gick inte att starta betalningen". A restricted
-key needs write access to Checkout Sessions only.
+key needs write access to Checkout Sessions and read access to Checkout
+Sessions, PaymentIntents, Charges and Refunds.
 
-**Trying checkout locally.** Put a test key in `.env.local`, start the app and
-check out; Stripe's test cards (e.g. `4242 4242 4242 4242`) work on the hosted
-page. Until Milestone 9 adds webhook processing, a completed test payment
-leaves the order PENDING: the success page honestly says the payment is being
-verified.
+**Trying checkout locally.** Put a test key in `.env.local`, forward webhooks
+with the [Stripe CLI](https://docs.stripe.com/stripe-cli) and start the app:
+
+```bash
+stripe login                                   # once, test mode
+stripe listen --forward-to localhost:3000/api/stripe/webhook
+# copy the printed whsec_… into .env.local as STRIPE_WEBHOOK_SECRET
+npm run dev
+```
+
+Check out with a test card (e.g. `4242 4242 4242 4242`). The forwarded
+`checkout.session.completed` event marks the order PAID, reduces stock and
+fills in the customer details; the confirmation page then shows the order.
+Without `stripe listen` the order stays PENDING (honestly shown as "being
+verified") until reconciliation asks Stripe, after the session's expiry. `stripe trigger` sends events
+for sessions HeavyCards did not create; they are acknowledged and ignored.
 
 **Without Stripe.** `PAYMENT_GATEWAY=fake` uses an in-process stand-in that
 never contacts Stripe (the E2E tests use it). It is refused on Vercel.
@@ -301,7 +321,36 @@ eligible for the session. For the Swedish store enable Cards, Swish and Klarna
 there, in test mode first. Their availability depends on the Stripe account
 and is not simulated by the application.
 
-**Webhooks** (`stripe listen`, `STRIPE_WEBHOOK_SECRET`) arrive in Milestone 9.
+**Webhooks.** `/api/stripe/webhook` verifies every event's signature with
+`STRIPE_WEBHOOK_SECRET` over the raw body and records processed event IDs, so
+redeliveries change nothing. For a deployment, create an endpoint in the
+Dashboard (Developers → Webhooks) pointing to
+`https://<domain>/api/stripe/webhook`, subscribed to exactly these events,
+and store its signing secret in `STRIPE_WEBHOOK_SECRET`:
+
+- `checkout.session.completed`
+- `checkout.session.async_payment_succeeded`
+- `checkout.session.async_payment_failed`
+- `checkout.session.expired`
+- `charge.refunded`
+- `refund.created`, `refund.updated`, `refund.failed`
+
+Refunds are made in the Stripe Dashboard. HeavyCards records only refunds
+Stripe reports as succeeded (a pending refund changes the order once it
+succeeds) and never restocks automatically.
+
+**Reconciliation.** If a webhook is missed, stock reserved for a Stripe
+session stays reserved until Stripe's answer is known (nothing is freed just
+because time passed). `GET /api/cron/reconcile-checkouts` asks Stripe about
+overdue checkouts and applies the result; `vercel.json` schedules it daily
+(the most a Vercel Hobby plan allows), and every checkout request also
+reconciles a few overdue ones. On a Pro plan, change the schedule to every 15
+minutes. The route requires `Authorization: Bearer $CRON_SECRET`; to run it
+locally:
+
+```bash
+curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/reconcile-checkouts
+```
 
 ## Email
 

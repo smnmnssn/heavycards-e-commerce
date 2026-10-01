@@ -8,7 +8,9 @@ migration:
 [20261001090000_admin_auth](../prisma/migrations/20261001090000_admin_auth/migration.sql)
 (Milestone 6) and
 [20261001120000_checkout_reservations](../prisma/migrations/20261001120000_checkout_reservations/migration.sql)
-(Milestone 8).
+(Milestone 8) and
+[20261002090000_payment_reconciliation](../prisma/migrations/20261002090000_payment_reconciliation/migration.sql)
+(Milestone 9).
 
 This document explains the decisions behind the schema. Keep it in sync when
 the schema changes.
@@ -35,7 +37,7 @@ the schema changes.
 | `ProductImage`         | `product_images`         | Ordered product images; the lowest `position` is the primary image.   |
 | `Order`                | `orders`                 | Checkout/order header with separate payment and fulfillment states.   |
 | `OrderItem`            | `order_items`            | Immutable purchase lines with name/SKU/price/VAT snapshots.           |
-| `InventoryReservation` | `inventory_reservations` | Units held for a pending checkout.                                    |
+| `InventoryReservation` | `inventory_reservations` | Units held for a pending checkout (provisional or awaiting payment).  |
 | `StripeEvent`          | `stripe_events`          | Processed webhook event IDs (idempotency).                            |
 | `Review`               | `reviews`                | Product reviews with moderation status and verified-purchase marker.  |
 | `ReviewToken`          | `review_tokens`          | Hashed secure review-link tokens.                                     |
@@ -152,9 +154,23 @@ certificationNumber }`). Adding them is purely additive: orders, inventory,
 
 ## Orders: payment vs fulfillment
 
-- Payment state (`paymentStatus`) is written **only** from verified Stripe
-  webhooks. Fulfillment state (`fulfillmentStatus`) is managed by admins.
-  Neither field implies the other; for example, PAID + PROCESSING is valid.
+- Payment state (`paymentStatus`) is written **only** from Stripe's verified
+  state (signed webhooks and reconciliation, both reading the session from
+  Stripe's API; `src/server/payments`). Fulfillment state
+  (`fulfillmentStatus`) is managed by admins. Neither field implies the
+  other; for example, PAID + PROCESSING is valid.
+- **Allowed payment transitions** (`PAYMENT_TRANSITIONS` in
+  `src/server/domain/payment.ts`): PENDING → PAID / EXPIRED / FAILED;
+  PAID → PARTIALLY_REFUNDED / REFUNDED; the refund states follow the amount
+  of Stripe refunds that have **succeeded** (pending, action-required, failed
+  and cancelled refunds never count) in both directions (PARTIALLY_REFUNDED ↔
+  REFUNDED, back to PAID if a succeeded refund later fails). `refundedAmount`
+  is that succeeded total. EXPIRED and FAILED are final, and no paid state
+  ever returns to an unpaid one. Staying in a state is a no-op.
+- `FAILED` is set only when Stripe reports that a delayed payment failed
+  (`checkout.session.async_payment_failed`, or its PaymentIntent back to
+  `requires_payment_method` / `canceled`). A customer leaving Checkout is
+  not a failure: the session simply expires later.
 - `EXPIRED` extends the spec's example list. It marks an abandoned checkout
   whose Stripe session expired, which is different from a `FAILED` payment.
   Keeping them apart keeps admin views and conversion numbers honest.
@@ -174,9 +190,19 @@ certificationNumber }`). Adding them is purely additive: orders, inventory,
   them: pending, expired and failed orders may lack them. A CHECK constraint
   (`orders_paid_details_check`) requires `paidAt`, `email`, `customerName`,
   `addressLine1`, `postalCode` and `city` as soon as an order is PAID,
-  PARTIALLY_REFUNDED or REFUNDED. Milestone 9 fills them from the verified,
-  completed Checkout Session before marking the order paid. `phone` and
-  `addressLine2` stay optional.
+  PARTIALLY_REFUNDED or REFUNDED. Payment finalization (Milestone 9) fills
+  them, in the same transaction that marks the order paid, from the verified
+  Checkout Session: `customerName` from the shipping name (one value, outer
+  whitespace removed, never split), `email` and `phone` from the customer
+  details, the address from the shipping details (country must be SE). If a
+  required value is missing or too long, the order is **not** marked paid: it
+  stays PENDING with its stock reserved, and a `PAYMENT_NEEDS_ATTENTION`
+  audit entry is written. `phone` and `addressLine2` stay optional.
+- **Payment identifiers.** `stripeCheckoutSessionId` links the order to its
+  session (set at checkout); `stripePaymentIntentId` is stored when Stripe
+  reports the payment (paid, or a delayed payment in progress) and is how
+  refund events find the order. `paidAt` is the time of Stripe's successful
+  charge.
 - **Checkout fields.** `checkoutAttemptId` (unique UUID) is the idempotency
   key of the browser's checkout attempt that created the order; it is a
   random value known only to that browser and never shown elsewhere.
@@ -192,7 +218,10 @@ certificationNumber }`). Adding them is purely additive: orders, inventory,
 - Email idempotency: `confirmationEmailSentAt` / `shippingEmailSentAt` are set
   when the email is sent, and an email is only sent while its marker is NULL.
   Milestone 10 claims the marker atomically with
-  `UPDATE … WHERE shipping_email_sent_at IS NULL`.
+  `UPDATE … WHERE shipping_email_sent_at IS NULL`. Milestone 9 sends
+  nothing: a paid order has `paymentStatus` PAID (or later refunded),
+  `paidAt`, the customer details and `confirmationEmailSentAt = NULL`,
+  which is exactly the work list for the order confirmation.
 
 ## Public order numbers
 
@@ -215,16 +244,32 @@ certificationNumber }`). Adding them is purely additive: orders, inventory,
 ## Inventory reservations
 
 ```
-availableToSell = stockOnHand − Σ quantity of reservations that are ACTIVE and not expired
+availableToSell = stockOnHand − Σ quantity of holding reservations
+
+holding = status = ACTIVE AND (awaiting_payment OR expires_at > now)
 ```
 
 - `stockOnHand` is physical stock. It is decremented only when a payment is
-  confirmed (reservation → CONSUMED, in the same transaction).
-- A reservation "holds" stock only while `status = ACTIVE` **and**
-  `expiresAt > now`. An expired reservation therefore stops blocking stock at
-  its expiry instant, even if the webhook was missed or the cleanup job has not
-  run. Cleanup just updates the status to RELEASED afterwards.
-- The rule is implemented once in `src/server/domain/inventory.ts` and unit tested.
+  confirmed (reservation → CONSUMED, in the same transaction), by the
+  reservation's quantity, exactly once.
+- **Two kinds of ACTIVE reservation** (`awaitingPayment`, Milestone 9):
+  - **Provisional** (`false`): created at checkout start, before a payment
+    page exists. Holds stock only until `expiresAt` (5 minutes), so a
+    crashed checkout never blocks stock. Nobody can pay it: the payment URL
+    is handed out only after the session is attached.
+  - **Awaiting payment** (`true`): attached to a Stripe Checkout Session the
+    customer can pay. Holds stock **until Stripe's outcome is applied**,
+    whatever `expiresAt` says, because Stripe may have accepted a payment
+    whose webhook arrives late. `expiresAt` (session expiry + 15 minutes)
+    is then only the time reconciliation asks Stripe if no webhook has
+    resolved it; it moves 15 minutes forward each time Stripe cannot decide
+    yet (delayed payment still processing, Stripe unreachable).
+- Such a hold ends only when Stripe's state is applied: paid → CONSUMED;
+  session expired or delayed payment failed → RELEASED. A missed webhook
+  therefore delays, but never prevents, the release (reconciliation).
+- The rule is implemented once in `src/server/domain/inventory.ts` (unit
+  tested) and, for queries, in `src/server/data/reservations.ts` (one SQL
+  fragment and one Prisma filter used by every availability query).
 - One reservation per product per order (unique `(order_id, product_id)`);
   quantity must be > 0.
 - **Concurrency strategy (implemented in Milestone 8,
@@ -248,24 +293,33 @@ availableToSell = stockOnHand − Σ quantity of reservations that are ACTIVE an
   5-minute provisional hold. Only once the Stripe session exists and is
   attached to the order are they extended to the session's `expires_at`
   (stored as `orders.checkout_expires_at`, 40 minutes after checkout start)
-  plus 15 minutes of grace, and only then does the customer receive the
-  payment URL. Milestone 9 extends the hold for asynchronous payment methods
-  until Stripe reports success or failure.
+  plus 15 minutes of grace and marked as awaiting payment, and only then
+  does the customer receive the payment URL. From then on the hold lasts
+  until Stripe's outcome (see above), including for delayed payment methods.
 - **Release:** a failed Stripe call, a superseding attempt from the same
-  browser (after its Stripe session was expired) or Milestone 9's expiry
-  handling sets the reservations to RELEASED and the order to EXPIRED.
-  `releaseExpiredReservations` tidies expired ACTIVE rows after checkout
-  requests; availability never depends on it.
+  browser (after its Stripe session was expired), Stripe's
+  `checkout.session.expired` / `async_payment_failed`, or reconciliation
+  learning the same, sets the reservations to RELEASED and the order to
+  EXPIRED or FAILED. `releaseExpiredReservations` tidies expired
+  _provisional_ rows; it never touches reservations awaiting payment.
+- The migration `20261002090000_payment_reconciliation` marked the ACTIVE
+  reservations of pending orders that already had a session as awaiting
+  payment.
 - Refunds never restock automatically (PROJECT.md §35). Restocking is an
   explicit admin action that increments `stockOnHand` and writes an audit log.
 
 ## Stripe webhook idempotency
 
 - `stripe_events.stripe_event_id` is unique.
-- Milestone 9 inserts the event row **in the same transaction** as the event's
-  side effects. A redelivered event hits the unique constraint, the transaction
-  rolls back, and nothing happens twice. A failed handler also rolls back its
-  event row, so Stripe's retry processes it again.
+- The webhook (Milestone 9) inserts the event row **in the same transaction**
+  as the event's side effects. A redelivered event is skipped before any
+  work; two deliveries racing hit the unique constraint, and the second
+  transaction rolls back entirely. A failed handler also rolls back its event
+  row, so Stripe's retry processes it again. Events that change nothing
+  (unrelated types, unknown sessions) are recorded too.
+- The effects are state-based in any case: they apply Stripe's current state
+  under the order row lock and require a PENDING order and ACTIVE
+  reservations, so a replay under a new event ID also changes nothing.
 - `tests/db/integrity.test.ts` demonstrates the pattern: the second delivery of
   the same event leaves the order unchanged.
 
@@ -347,6 +401,14 @@ UPDATE`) before checking that another active OWNER remains, so concurrent
     `CHANGE_CATEGORY_SLUG`, `DELETE_CATEGORY`;
   - sets (`PokemonSet`): `CREATE_POKEMON_SET`, `UPDATE_POKEMON_SET`,
     `CHANGE_POKEMON_SET_SLUG`, `DELETE_POKEMON_SET`.
+  - payments (`Order`; system entries with `adminUserId` NULL; metadata
+    holds the source and the Stripe event ID and type, never personal data):
+    `MARK_ORDER_PAID` (with `stockShortfalls` if stock had been lowered
+    below the reservation), `MARK_ORDER_PAYMENT_FAILED`, `SYNC_ORDER_REFUND`
+    (old and new status and refunded amount) and `PAYMENT_NEEDS_ATTENTION`
+    (once per order and problem: amount or currency mismatch, missing
+    customer data, payment for an already closed checkout, unexpected session
+    state). Expired checkouts are not audited.
 
 ## Store settings
 

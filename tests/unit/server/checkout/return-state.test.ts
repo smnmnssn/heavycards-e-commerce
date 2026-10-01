@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -21,28 +23,63 @@ describe("parseCheckoutSessionId", () => {
 });
 
 describe("checkoutReturnState", () => {
-  it("never claims payment for a pending order", () => {
-    expect(
-      checkoutReturnState({ orderNumber: 10_001, paymentStatus: "PENDING" }),
-    ).toEqual({ kind: "processing", orderNumber: "HC-10001" });
+  const ATTEMPT = "6f1c1f9e-3b7a-4c2e-9a51-1e0f2d3c4b5a";
+  const order = (
+    paymentStatus: Parameters<typeof checkoutReturnState>[0] extends infer O
+      ? O extends { paymentStatus: infer S }
+        ? S
+        : never
+      : never,
+  ) => ({
+    orderNumber: 10_001,
+    paymentStatus,
+    totalAmount: 77_800,
+    checkoutAttemptId: ATTEMPT,
+    items: [
+      {
+        productId: "01999999-0000-7000-8000-00000000000a",
+        productNameSnapshot: "Booster Box",
+        quantity: 2,
+      },
+    ],
   });
 
-  it("reflects only database payment states", () => {
-    expect(
-      checkoutReturnState({ orderNumber: 10_002, paymentStatus: "PAID" }),
-    ).toEqual({ kind: "paid", orderNumber: "HC-10002" });
-    expect(
-      checkoutReturnState({ orderNumber: 10_003, paymentStatus: "REFUNDED" })
-        .kind,
-    ).toBe("refunded");
-    expect(
-      checkoutReturnState({ orderNumber: 10_004, paymentStatus: "EXPIRED" })
-        .kind,
-    ).toBe("not_completed");
-    expect(
-      checkoutReturnState({ orderNumber: 10_005, paymentStatus: "FAILED" })
-        .kind,
-    ).toBe("not_completed");
+  it("never claims payment for a pending order", () => {
+    expect(checkoutReturnState(order("PENDING"))).toEqual({
+      kind: "processing",
+      orderNumber: "HC-10001",
+    });
+  });
+
+  it("shows products and total (no personal data) once paid", () => {
+    const state = checkoutReturnState(order("PAID"));
+    expect(state).toEqual({
+      kind: "paid",
+      orderNumber: "HC-10001",
+      totalAmount: 77_800,
+      lines: [
+        {
+          productId: "01999999-0000-7000-8000-00000000000a",
+          name: "Booster Box",
+          quantity: 2,
+        },
+      ],
+      attemptHash: createHash("sha256").update(ATTEMPT).digest("hex"),
+    });
+    expect(JSON.stringify(state)).not.toContain(ATTEMPT);
+    expect(checkoutReturnState(order("PARTIALLY_REFUNDED")).kind).toBe("paid");
+  });
+
+  it("distinguishes refunded, expired and failed orders", () => {
+    expect(checkoutReturnState(order("REFUNDED")).kind).toBe("refunded");
+    expect(checkoutReturnState(order("EXPIRED")).kind).toBe("expired");
+    expect(checkoutReturnState(order("FAILED")).kind).toBe("failed");
     expect(checkoutReturnState(null)).toEqual({ kind: "unknown" });
+  });
+
+  it("has no attempt hash for orders without a checkout attempt", () => {
+    expect(
+      checkoutReturnState({ ...order("PAID"), checkoutAttemptId: null }),
+    ).toMatchObject({ attemptHash: null });
   });
 });

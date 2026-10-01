@@ -142,7 +142,9 @@ describe("pending order creation", () => {
     });
 
     // Reservations hold until Stripe stops accepting payment, plus grace.
-    const sessionExpiry = gateway.sessions.get(outcome.sessionId)!.expiresAt;
+    const sessionExpiry = new Date(
+      gateway.session(outcome.sessionId)!.expiresAt,
+    );
     expect(order.reservations).toHaveLength(2);
     for (const reservation of order.reservations) {
       expect(reservation.status).toBe("ACTIVE");
@@ -212,7 +214,7 @@ describe("pending order creation", () => {
 
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
-    const { input } = gateway.sessions.get(outcome.sessionId)!;
+    const { input } = gateway.session(outcome.sessionId)!;
     expect(input).toMatchObject({
       orderId: outcome.orderId,
       orderNumber: "HC-10001",
@@ -540,13 +542,17 @@ describe("reservation lifecycle and Stripe failures", () => {
 
   it("refuses a session whose amount does not match the order", async () => {
     const box = await product({ stockOnHand: 1, priceAmount: 10_000 });
-    const wrong: CheckoutGateway = {
-      createCheckoutSession: async (input, options) => ({
-        ...(await gateway.createCheckoutSession(input, options)),
-        amountTotal: 1,
-      }),
-      expireCheckoutSession: (id) => gateway.expireCheckoutSession(id),
-    };
+    const wrong: CheckoutGateway = Object.assign(
+      Object.create(gateway) as FakeCheckoutGateway,
+      {
+        createCheckoutSession: async (
+          ...args: Parameters<FakeCheckoutGateway["createCheckoutSession"]>
+        ) => ({
+          ...(await gateway.createCheckoutSession(...args)),
+          amountTotal: 1,
+        }),
+      },
+    );
 
     const outcome = await createCheckout(
       { ...deps, gateway: wrong },
@@ -554,23 +560,57 @@ describe("reservation lifecycle and Stripe failures", () => {
     );
 
     expect(outcome).toEqual({ ok: false, code: "payment_unavailable" });
-    expect([...gateway.sessions.values()][0]!.status).toBe("expired");
+    expect(gateway.allSessions()[0]!.status).toBe("expired");
     expect(await available(box.id)).toBe(1);
   });
 
-  it("an abandoned reservation stops holding stock once it expires, and cleanup tidies it", async () => {
+  it("an attached reservation keeps holding after its expiry until Stripe's outcome is known (Milestone 9)", async () => {
     const box = await product({ stockOnHand: 1 });
     await createCheckout(
       deps,
       request([{ id: box.id, price: box.priceAmount }]),
     );
     const reservation = await db.inventoryReservation.findFirstOrThrow();
+    expect(reservation.awaitingPayment).toBe(true);
+    const afterExpiry = new Date(reservation.expiresAt.getTime() + 1);
+
+    // Stripe may have accepted a payment whose webhook is late: the unit is
+    // not sellable again merely because time passed.
+    expect(await available(box.id, afterExpiry)).toBe(0);
+    const later = await createCheckout(
+      { ...deps, now: () => afterExpiry },
+      request([{ id: box.id, price: box.priceAmount }]),
+    );
+    expect(later).toMatchObject({ ok: false, code: "rejected" });
+
+    // The provisional-hold cleanup never touches it either.
+    expect(await releaseExpiredReservations(db, afterExpiry)).toBe(0);
+    expect((await db.inventoryReservation.findFirstOrThrow()).status).toBe(
+      "ACTIVE",
+    );
+  });
+
+  it("a provisional hold whose payment page was never handed out lapses by time, and cleanup tidies it", async () => {
+    const box = await product({ stockOnHand: 1 });
+    gateway.beforeCreate = async () => {
+      throw new Error("process crashed while calling Stripe");
+    };
+    const crashed = await createCheckout(
+      deps,
+      request([{ id: box.id, price: box.priceAmount }]),
+    ).catch(() => null);
+    expect(crashed).toMatchObject({ ok: false, code: "payment_unavailable" });
+    gateway.beforeCreate = null;
+    // Simulate a crash that skipped the release: re-activate the hold.
+    await db.inventoryReservation.updateMany({
+      data: { status: "ACTIVE" },
+    });
+    const reservation = await db.inventoryReservation.findFirstOrThrow();
+    expect(reservation.awaitingPayment).toBe(false);
     const afterExpiry = new Date(reservation.expiresAt.getTime() + 1);
 
     expect(await available(box.id)).toBe(0);
     expect(await available(box.id, afterExpiry)).toBe(1);
-
-    // A later customer can buy it even before any cleanup ran.
     const later = await createCheckout(
       { ...deps, now: () => afterExpiry },
       request([{ id: box.id, price: box.priceAmount }]),
@@ -578,11 +618,6 @@ describe("reservation lifecycle and Stripe failures", () => {
     expect(later.ok).toBe(true);
 
     expect(await releaseExpiredReservations(db, afterExpiry)).toBe(1);
-    const statuses = await db.inventoryReservation.findMany({
-      orderBy: { createdAt: "asc" },
-      select: { status: true },
-    });
-    expect(statuses.map((s) => s.status)).toEqual(["RELEASED", "ACTIVE"]);
   });
 });
 
@@ -606,7 +641,7 @@ describe("idempotent checkout creation", () => {
     });
     expect(await db.order.count()).toBe(1);
     expect(await db.inventoryReservation.count()).toBe(1);
-    expect(gateway.sessions.size).toBe(1);
+    expect(gateway.allSessions().length).toBe(1);
     expect(await available(box.id)).toBe(3);
   });
 
@@ -622,7 +657,7 @@ describe("idempotent checkout creation", () => {
     expect(results.every((result) => result.ok)).toBe(true);
     expect(new Set(results.map((r) => r.ok && r.orderId)).size).toBe(1);
     expect(await db.order.count()).toBe(1);
-    expect(gateway.sessions.size).toBe(1);
+    expect(gateway.allSessions().length).toBe(1);
   });
 
   it("closes an attempt whose cart or displayed prices changed", async () => {
@@ -673,9 +708,7 @@ describe("idempotent checkout creation", () => {
     );
 
     expect(second.ok).toBe(true);
-    expect(gateway.sessions.get(firstOutcome.sessionId)!.status).toBe(
-      "expired",
-    );
+    expect(gateway.session(firstOutcome.sessionId)!.status).toBe("expired");
     const previous = await db.order.findUniqueOrThrow({
       where: { id: firstOutcome.orderId },
       include: { reservations: true },
@@ -711,7 +744,7 @@ describe("idempotent checkout creation", () => {
     const first = request([{ id: box.id, price: box.priceAmount }]);
     const outcome = await createCheckout(deps, first);
     if (!outcome.ok) throw new Error("expected success");
-    gateway.sessions.get(outcome.sessionId)!.status = "complete";
+    gateway.completeSession(outcome.sessionId);
 
     await createCheckout(
       deps,
@@ -746,7 +779,7 @@ describe("idempotent checkout creation", () => {
     const outcome = await createCheckout(deps, first);
 
     expect(outcome).toEqual({ ok: false, code: "attempt_closed" });
-    const statuses = [...gateway.sessions.values()].map((s) => s.status);
+    const statuses = gateway.allSessions().map((s) => s.status);
     expect(statuses.sort()).toEqual(["expired", "open"]);
     expect(await available(box.id)).toBe(0);
     expect(

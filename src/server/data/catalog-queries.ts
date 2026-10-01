@@ -9,6 +9,11 @@ import {
 import { stockholmToday, toIsoDate, type IsoDate } from "@/lib/dates";
 import type { SortKey } from "@/server/domain/catalog-params";
 import { hasPublicPage, newArrivalsSince } from "@/server/domain/catalog";
+import {
+  holdingReservationSelect,
+  holdingReservationSql,
+  holdingReservationWhere,
+} from "@/server/data/reservations";
 import { availableToSell } from "@/server/domain/inventory";
 
 /*
@@ -195,7 +200,7 @@ export async function listProducts(
     LEFT JOIN LATERAL (
       SELECT COALESCE(SUM(r.quantity), 0)::int AS reserved
       FROM inventory_reservations r
-      WHERE r.product_id = p.id AND r.status = 'ACTIVE' AND r.expires_at > ${now}
+      WHERE r.product_id = p.id AND ${holdingReservationSql(now)}
     ) res ON TRUE
     LEFT JOIN LATERAL (
       SELECT i.url, i.alt_text, i.width, i.height
@@ -220,7 +225,7 @@ export async function listProducts(
       LEFT JOIN LATERAL (
         SELECT COALESCE(SUM(r.quantity), 0)::int AS reserved
         FROM inventory_reservations r
-        WHERE r.product_id = p.id AND r.status = 'ACTIVE' AND r.expires_at > ${now}
+        WHERE r.product_id = p.id AND ${holdingReservationSql(now)}
       ) res ON TRUE
       WHERE ${Prisma.join(conditions, " AND ")}
     `;
@@ -432,12 +437,8 @@ export async function getProductBySlug(
   const approved = { productId: product.id, status: "APPROVED" } as const;
   const [reservations, reviews, reviewStats] = await Promise.all([
     client.inventoryReservation.findMany({
-      where: {
-        productId: product.id,
-        status: "ACTIVE",
-        expiresAt: { gt: now },
-      },
-      select: { quantity: true, status: true, expiresAt: true },
+      where: { productId: product.id, ...holdingReservationWhere(now) },
+      select: holdingReservationSelect,
     }),
     client.review.findMany({
       where: approved,

@@ -125,3 +125,90 @@ describe("20261001120000_checkout_reservations", () => {
     expect(Number(schemas[0]!.count)).toBe(0);
   });
 });
+
+describe("20261002090000_payment_reconciliation", () => {
+  it("marks only holds of attached, pending checkouts as awaiting payment", async () => {
+    const migrations = await Promise.all(
+      [
+        "20260930205053_init",
+        "20261001090000_admin_auth",
+        "20261001120000_checkout_reservations",
+      ].map(statements),
+    );
+    const reconciliation = await statements(
+      "20261002090000_payment_reconciliation",
+    );
+    let rows: unknown;
+
+    await db
+      .$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(`CREATE SCHEMA ${SCHEMA}`);
+          await tx.$executeRawUnsafe(`SET LOCAL search_path TO ${SCHEMA}`);
+          for (const statement of migrations.flat()) {
+            await tx.$executeRawUnsafe(statement);
+          }
+
+          await tx.$executeRawUnsafe(
+            `INSERT INTO categories (id, name, slug, updated_at)
+             VALUES ('00000000-0000-7000-8000-000000000001', 'C', 'c', now())`,
+          );
+          await tx.$executeRawUnsafe(
+            `INSERT INTO products (id, name, slug, sku, price_amount, stock_on_hand,
+               status, category_id, updated_at)
+             VALUES ('00000000-0000-7000-8000-000000000002', 'P', 'p', 'P-1', 100, 5,
+               'ACTIVE', '00000000-0000-7000-8000-000000000001', now())`,
+          );
+          // order number, payment status, session, reservation status
+          const cases = [
+            [10_001, "PENDING", "cs_test_attached", "ACTIVE"],
+            [10_002, "PENDING", null, "ACTIVE"], // provisional (never attached)
+            [10_003, "EXPIRED", "cs_test_expired", "RELEASED"],
+            [10_004, "PENDING", "cs_test_released", "RELEASED"],
+          ] as const;
+          for (const [number, status, session, reservation] of cases) {
+            const orderId = `00000000-0000-7000-8000-0000000${number}`;
+            await tx.$executeRawUnsafe(
+              `INSERT INTO orders (id, order_number, subtotal_amount, shipping_amount,
+                 tax_amount, total_amount, payment_status, stripe_checkout_session_id,
+                 updated_at)
+               VALUES ($1::uuid, $2, 100, 0, 20, 100, $3::"PaymentStatus", $4, now())`,
+              orderId,
+              number,
+              status,
+              session,
+            );
+            await tx.$executeRawUnsafe(
+              `INSERT INTO inventory_reservations (id, order_id, product_id, quantity,
+                 status, expires_at, updated_at)
+               VALUES (gen_random_uuid(), $1::uuid, '00000000-0000-7000-8000-000000000002',
+                 1, $2::"ReservationStatus", now(), now())`,
+              orderId,
+              reservation,
+            );
+          }
+
+          for (const statement of reconciliation) {
+            await tx.$executeRawUnsafe(statement);
+          }
+          rows = await tx.$queryRawUnsafe(
+            `SELECT o.order_number AS "orderNumber", r.awaiting_payment AS "awaiting"
+             FROM inventory_reservations r JOIN orders o ON o.id = r.order_id
+             ORDER BY o.order_number`,
+          );
+          throw new Rollback();
+        },
+        { timeout: 30_000 },
+      )
+      .catch((error: unknown) => {
+        if (!(error instanceof Rollback)) throw error;
+      });
+
+    expect(rows).toEqual([
+      { orderNumber: 10_001, awaiting: true },
+      { orderNumber: 10_002, awaiting: false },
+      { orderNumber: 10_003, awaiting: false },
+      { orderNumber: 10_004, awaiting: false },
+    ]);
+  });
+});

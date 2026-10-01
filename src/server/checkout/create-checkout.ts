@@ -7,6 +7,10 @@ import {
 } from "@/lib/checkout/checkout";
 import { loadCheckoutProducts } from "@/server/cart/cart-products";
 import {
+  holdingReservationSelect,
+  holdingReservationWhere,
+} from "@/server/data/reservations";
+import {
   isLockTimeout,
   isUniqueViolation,
   withTransactionRetry,
@@ -39,8 +43,10 @@ import type {
  *    (PROVISIONAL_HOLD_MS).
  * 2. create the Stripe Checkout Session, idempotently per order.
  * 3. attach (one transaction): if the order is still pending and its
- *    reservations still hold, store the session ID and extend the
- *    reservations to the session's expiry plus a grace period.
+ *    reservations still hold, store the session ID and mark the reservations
+ *    as awaiting payment. From then on only Stripe's outcome ends the hold
+ *    (Milestone 9: webhooks and reconciliation); their expiresAt (session
+ *    expiry plus a grace period) is when reconciliation asks Stripe.
  *
  * The customer receives the payment URL only after step 3 has committed, so
  * nobody can pay a session whose stock is not reserved. A crash between the
@@ -105,7 +111,7 @@ const orderSelect = {
     // Stable order, so a retried Stripe request has identical parameters.
     orderBy: { id: "asc" },
   },
-  reservations: { select: { quantity: true, status: true, expiresAt: true } },
+  reservations: { select: holdingReservationSelect },
 } satisfies Prisma.OrderSelect;
 
 type CheckoutOrder = Prisma.OrderGetPayload<{ select: typeof orderSelect }>;
@@ -360,9 +366,11 @@ function attachSession(
         return false;
       }
 
-      // Hold until Stripe stops accepting payment, plus grace for a payment
-      // completed at the last moment. Stripe echoes our expires_at; the
-      // later of the two is used in case it ever differs.
+      // From now on the hold lasts until Stripe's outcome is applied (a paid
+      // session may be reported late). expiresAt becomes the time to ask
+      // Stripe if no webhook has resolved it: the session's expiry plus
+      // grace. Stripe echoes our expires_at; the later of the two is used in
+      // case it ever differs.
       const sessionExpiresAt = new Date(
         Math.max(
           session.expiresAt.getTime(),
@@ -370,8 +378,11 @@ function attachSession(
         ),
       );
       const { count } = await tx.inventoryReservation.updateMany({
-        where: { orderId: order.id, status: "ACTIVE", expiresAt: { gt: now } },
-        data: { expiresAt: reservationHoldUntil(sessionExpiresAt) },
+        where: { orderId: order.id, ...holdingReservationWhere(now) },
+        data: {
+          expiresAt: reservationHoldUntil(sessionExpiresAt),
+          awaitingPayment: true,
+        },
       });
       if (count !== order.reservations.length) {
         throw new ReservationLapsedError();

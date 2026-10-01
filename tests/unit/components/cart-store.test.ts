@@ -1,6 +1,12 @@
+import { createHash } from "node:crypto";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { CartStore, type CartStorage } from "@/components/cart/cart-store";
+import {
+  CartStore,
+  CHECKOUT_ATTEMPT_STORAGE_KEY,
+  type CartStorage,
+} from "@/components/cart/cart-store";
 import { CART_STORAGE_KEY, serializeCart } from "@/lib/cart/cart";
 import { formatPrice } from "@/lib/money";
 import type { CartProductView } from "@/lib/cart/evaluate";
@@ -601,5 +607,96 @@ describe("CartStore checkout", () => {
 
     store.resetCheckout();
     expect(store.getSnapshot().checkout.status).toBe("idle");
+  });
+});
+
+describe("CartStore after a paid checkout", () => {
+  const ATTEMPT = "6f1c1f9e-3b7a-4c2e-9a51-1e0f2d3c4b5a";
+  const hashOf = (text: string) =>
+    createHash("sha256").update(text).digest("hex");
+  const sha256 = async (text: string) => hashOf(text);
+
+  function paidSetup(lines: Array<{ id: string; q: number }>) {
+    const storage = new MemoryStorage();
+    storage.setItem(CART_STORAGE_KEY, JSON.stringify({ v: 1, lines }));
+    storage.setItem(
+      CHECKOUT_ATTEMPT_STORAGE_KEY,
+      JSON.stringify({ id: ATTEMPT, fp: "x" }),
+    );
+    const store = new CartStore({
+      fetchProducts: async (ids) => ids.map((id) => view(id)),
+      storage,
+      sha256,
+    });
+    store.load();
+    return { store, storage };
+  }
+
+  it("removes exactly what was bought, once, keeping later additions", async () => {
+    // Bought 2 × A and 1 × B; afterwards 1 more A and a C were added.
+    const { store, storage } = paidSetup([
+      { id: STOCK_A, q: 3 },
+      { id: STOCK_B, q: 1 },
+      { id: PRE_NOV, q: 1 },
+    ]);
+    const purchased = [
+      { productId: STOCK_A, quantity: 2 },
+      { productId: STOCK_B, quantity: 1 },
+    ];
+
+    expect(await store.completePaidCheckout(hashOf(ATTEMPT), purchased)).toBe(
+      true,
+    );
+    expect(store.getSnapshot().cart.lines).toEqual([
+      { productId: STOCK_A, quantity: 1 },
+      { productId: PRE_NOV, quantity: 1 },
+    ]);
+    expect(stored(storage).lines).toHaveLength(2);
+
+    // A reload of the confirmation page must not remove anything again.
+    expect(await store.completePaidCheckout(hashOf(ATTEMPT), purchased)).toBe(
+      false,
+    );
+    expect(store.getSnapshot().cart.lines).toHaveLength(2);
+  });
+
+  it("leaves the cart alone in a browser that did not start that checkout", async () => {
+    const { store } = paidSetup([{ id: STOCK_A, q: 2 }]);
+
+    expect(
+      await store.completePaidCheckout(hashOf("another-attempt"), [
+        { productId: STOCK_A, quantity: 2 },
+      ]),
+    ).toBe(false);
+    expect(store.getSnapshot().cart.lines).toEqual([
+      { productId: STOCK_A, quantity: 2 },
+    ]);
+  });
+
+  it("keeps the cart when hashing is unavailable", async () => {
+    const storage = new MemoryStorage();
+    storage.setItem(
+      CART_STORAGE_KEY,
+      serializeCart({ lines: [{ productId: STOCK_A, quantity: 1 }] }),
+    );
+    storage.setItem(
+      CHECKOUT_ATTEMPT_STORAGE_KEY,
+      JSON.stringify({ id: ATTEMPT, fp: "x" }),
+    );
+    const store = new CartStore({
+      fetchProducts: async (ids) => ids.map((id) => view(id)),
+      storage,
+      sha256: async () => {
+        throw new Error("no crypto");
+      },
+    });
+    store.load();
+
+    expect(
+      await store.completePaidCheckout(hashOf(ATTEMPT), [
+        { productId: STOCK_A, quantity: 1 },
+      ]),
+    ).toBe(false);
+    expect(store.getSnapshot().cart.lines).toHaveLength(1);
   });
 });

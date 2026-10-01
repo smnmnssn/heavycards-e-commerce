@@ -11,6 +11,10 @@ import {
   isPurchasable,
   type AvailabilityState,
 } from "@/server/domain/catalog";
+import {
+  holdingReservationSelect,
+  holdingReservationWhere,
+} from "@/server/data/reservations";
 import { availableToSell } from "@/server/domain/inventory";
 
 /** The shared client or a transaction client. */
@@ -78,17 +82,20 @@ export async function loadCheckoutProducts(
       },
       reservations: {
         where: {
-          status: "ACTIVE",
-          expiresAt: { gt: now },
-          ...(ownAttemptId && {
-            // `not` alone would also drop orders without an attempt (NULL).
-            OR: [
-              { order: { checkoutAttemptId: null } },
-              { order: { checkoutAttemptId: { not: ownAttemptId } } },
-            ],
-          }),
+          AND: [
+            holdingReservationWhere(now),
+            ownAttemptId
+              ? {
+                  // `not` alone would also drop orders without an attempt.
+                  OR: [
+                    { order: { checkoutAttemptId: null } },
+                    { order: { checkoutAttemptId: { not: ownAttemptId } } },
+                  ],
+                }
+              : {},
+          ],
         },
-        select: { quantity: true, status: true, expiresAt: true },
+        select: holdingReservationSelect,
       },
     },
   });

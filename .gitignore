@@ -9,6 +9,8 @@
 /playwright/.cache/
 /.e2e-outbox/
 /.e2e-storage/
+# fake Stripe session state of the E2E server (FAKE_STRIPE_STATE_DIR)
+/.e2e-stripe/
 
 # locally stored product images (STORAGE_PROVIDER=local); never committed
 /.storage/

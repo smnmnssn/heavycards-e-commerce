@@ -1,14 +1,18 @@
 import type { PrismaClient } from "@/generated/prisma/client";
 
 /**
- * Safety net for reservations whose checkout was never resolved (missed
- * webhook, crashed request). Expired ACTIVE reservations already hold no
- * stock (src/server/domain/inventory.ts), so this only tidies their status
- * to RELEASED; correctness never depends on it running.
+ * Tidies provisional holds of checkouts that never reached a payment page
+ * (crashed or failed requests). Expired provisional reservations already
+ * hold no stock (src/server/domain/inventory.ts), so this only sets their
+ * status to RELEASED; correctness never depends on it running.
+ *
+ * Reservations awaiting payment are never touched here: Stripe may have
+ * accepted the payment. They are resolved by webhooks or by
+ * reconcileCheckouts (src/server/payments/reconcile.ts).
  *
  * Bounded per call and skips rows another transaction holds, so it can run
  * after any request without blocking checkouts. Order payment states are
- * left to Stripe event processing (Milestone 9).
+ * left to payment processing.
  */
 export async function releaseExpiredReservations(
   db: PrismaClient,
@@ -20,7 +24,7 @@ export async function releaseExpiredReservations(
     SET status = 'RELEASED', updated_at = ${now}
     WHERE id IN (
       SELECT id FROM inventory_reservations
-      WHERE status = 'ACTIVE' AND expires_at <= ${now}
+      WHERE status = 'ACTIVE' AND NOT awaiting_payment AND expires_at <= ${now}
       ORDER BY expires_at
       LIMIT ${limit}
       FOR UPDATE SKIP LOCKED

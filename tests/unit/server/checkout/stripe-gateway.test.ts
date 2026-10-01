@@ -5,6 +5,7 @@ import {
   ALLOWED_SHIPPING_COUNTRIES,
   buildCheckoutSessionParams,
   StripeCheckoutGateway,
+  toSessionState,
 } from "@/server/checkout/stripe-gateway";
 
 const input: CheckoutSessionInput = {
@@ -120,6 +121,9 @@ describe("buildCheckoutSessionParams", () => {
   });
 });
 
+const gatewayWith = (sessions: object, refunds?: object) =>
+  new StripeCheckoutGateway({ sessions, refunds } as never);
+
 describe("StripeCheckoutGateway", () => {
   const session = {
     id: "cs_test_123",
@@ -132,11 +136,11 @@ describe("StripeCheckoutGateway", () => {
 
   it("passes the idempotency key and maps the session", async () => {
     const create = vi.fn().mockResolvedValue(session);
-    const gateway = new StripeCheckoutGateway({
+    const gateway = gatewayWith({
       create,
       expire: vi.fn(),
       retrieve: vi.fn(),
-    } as never);
+    });
 
     const created = await gateway.createCheckoutSession(input, {
       idempotencyKey: "heavycards-checkout-x",
@@ -155,24 +159,138 @@ describe("StripeCheckoutGateway", () => {
   });
 
   it("refuses a session without a URL", async () => {
-    const gateway = new StripeCheckoutGateway({
+    const gateway = gatewayWith({
       create: vi.fn().mockResolvedValue({ ...session, url: null }),
-    } as never);
+    });
     await expect(
       gateway.createCheckoutSession(input, { idempotencyKey: "k" }),
     ).rejects.toThrow("without a URL");
   });
 
   it("reports the real state when a session can no longer be expired", async () => {
-    const gateway = new StripeCheckoutGateway({
+    const gateway = gatewayWith({
       expire: vi.fn().mockRejectedValue(new Error("not open")),
       retrieve: vi.fn().mockResolvedValue({ ...session, status: "complete" }),
-    } as never);
+    });
     expect(await gateway.expireCheckoutSession("cs_test_123")).toBe("complete");
 
-    const expiring = new StripeCheckoutGateway({
+    const expiring = gatewayWith({
       expire: vi.fn().mockResolvedValue({ ...session, status: "expired" }),
-    } as never);
+    });
     expect(await expiring.expireCheckoutSession("cs_test_123")).toBe("expired");
   });
+
+  it("reads the session from the API with its payment, never from an event", async () => {
+    const retrieve = vi.fn().mockResolvedValue(paidSession);
+    const gateway = gatewayWith({ retrieve });
+
+    const state = await gateway.retrieveCheckoutSession("cs_test_paid");
+
+    expect(retrieve).toHaveBeenCalledWith("cs_test_paid", {
+      expand: ["payment_intent.latest_charge"],
+    });
+    expect(state).toEqual({
+      id: "cs_test_paid",
+      status: "complete",
+      paymentStatus: "paid",
+      amountTotal: 77_800,
+      currency: "sek",
+      paymentIntent: {
+        id: "pi_test_1",
+        status: "succeeded",
+        paidAt: new Date(1_790_000_100_000),
+      },
+      customer: {
+        shippingName: "Anna-Karin von Essen",
+        name: "A. K. von Essen",
+        email: "anna@example.com",
+        phone: "+46701234567",
+      },
+      shippingAddress: {
+        line1: "Storgatan 1",
+        line2: "lgh 1102",
+        postalCode: "111 22",
+        city: "Stockholm",
+        country: "SE",
+      },
+    });
+  });
+
+  it("maps a session whose payment is not expanded", () => {
+    expect(
+      toSessionState({
+        ...paidSession,
+        payment_intent: "pi_test_2",
+        collected_information: null,
+      } as never),
+    ).toMatchObject({
+      paymentIntent: { id: "pi_test_2", status: "unknown", paidAt: null },
+      shippingAddress: null,
+      customer: { shippingName: null },
+    });
+  });
+
+  it("finds the session of a payment", async () => {
+    const list = vi.fn().mockResolvedValue({ data: [{ id: "cs_test_x" }] });
+    expect(
+      await gatewayWith({ list }).findCheckoutSessionIdForPayment("pi_1"),
+    ).toBe("cs_test_x");
+    expect(list).toHaveBeenCalledWith({ payment_intent: "pi_1", limit: 1 });
+    expect(
+      await gatewayWith({
+        list: vi.fn().mockResolvedValue({ data: [] }),
+      }).findCheckoutSessionIdForPayment("pi_2"),
+    ).toBeNull();
+  });
+
+  it("counts only succeeded refunds across all of a payment's refunds", async () => {
+    const refunds = [
+      { amount: 1_000, status: "succeeded", currency: "sek" },
+      { amount: 600, status: "succeeded", currency: "sek" },
+      { amount: 2_000, status: "pending", currency: "sek" },
+      { amount: 400, status: "requires_action", currency: "sek" },
+      { amount: 5_000, status: "failed", currency: "sek" },
+      { amount: 7_000, status: "canceled", currency: "sek" },
+    ];
+    const list = vi.fn(() => ({
+      async *[Symbol.asyncIterator]() {
+        yield* refunds;
+      },
+    }));
+
+    expect(
+      await gatewayWith({}, { list }).retrieveRefundedAmount("pi_1"),
+    ).toEqual({ amountRefunded: 1_600, currency: "sek" });
+    expect(list).toHaveBeenCalledWith({ payment_intent: "pi_1", limit: 100 });
+  });
 });
+
+const paidSession = {
+  id: "cs_test_paid",
+  status: "complete",
+  payment_status: "paid",
+  amount_total: 77_800,
+  currency: "sek",
+  payment_intent: {
+    id: "pi_test_1",
+    status: "succeeded",
+    latest_charge: { status: "succeeded", created: 1_790_000_100 },
+  },
+  customer_details: {
+    name: "A. K. von Essen",
+    email: "anna@example.com",
+    phone: "+46701234567",
+  },
+  collected_information: {
+    shipping_details: {
+      name: "Anna-Karin von Essen",
+      address: {
+        line1: "Storgatan 1",
+        line2: "lgh 1102",
+        postal_code: "111 22",
+        city: "Stockholm",
+        country: "SE",
+      },
+    },
+  },
+};

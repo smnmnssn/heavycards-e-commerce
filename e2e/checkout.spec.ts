@@ -8,6 +8,12 @@ import {
   pendingOrdersFor,
   removeCheckoutTestData,
   reserveForSomeoneElse,
+  expireAtStripe,
+  failDelayedPaymentAtStripe,
+  payAtStripe,
+  sendStripeEvent,
+  STRIPE_ADDRESS,
+  STRIPE_CUSTOMER,
   type TestProduct,
 } from "./checkout-fixtures";
 
@@ -403,5 +409,253 @@ test.describe("on a phone", () => {
     );
     expect(overflow).toBeLessThanOrEqual(0);
     await expectNoAxeViolations(page);
+  });
+});
+
+// --- Milestone 9: payment outcomes from verified Stripe events ---------------------
+
+/** Cart → Till kassan → (fake) Stripe; returns the Checkout Session ID. */
+async function goToStripe(
+  page: Page,
+  lines: Array<{ product: TestProduct; quantity: number }>,
+) {
+  await plantCart(page, lines);
+  await openCart(page);
+  await checkoutButton(page).click();
+  await expect(page).toHaveURL(STRIPE_PAGE);
+  return new URL(page.url()).pathname.split("/").pop()!;
+}
+
+const confirmation = (sessionId: string) =>
+  `/kassa/bekraftelse?session_id=${sessionId}`;
+const heading = (page: Page, name: string) =>
+  page.getByRole("main").getByRole("heading", { level: 1, name });
+
+test.describe("payment outcomes", () => {
+  test("a verified payment shows the confirmation, finalizes stock and clears the bought items", async ({
+    page,
+  }) => {
+    const product = await createTestProduct({
+      stockOnHand: 5,
+      priceAmount: 49_900,
+    });
+    const sessionId = await goToStripe(page, [{ product, quantity: 2 }]);
+
+    await payAtStripe(sessionId);
+    const response = await sendStripeEvent(
+      page.request,
+      "checkout.session.completed",
+      sessionId,
+    );
+    expect(response.status()).toBe(200);
+    await page.goto(confirmation(sessionId));
+
+    const main = page.getByRole("main");
+    await expect(heading(page, "Tack för din beställning!")).toBeVisible();
+    await expect(main).toContainText("Betalningen är bekräftad.");
+    await expect(main).toContainText(product.name);
+    await expect(main).toContainText("2 st");
+    await expect(main).toContainText(/1\s077\skr/); // 2 × 499 + 79 shipping
+    // No personal data on a page reachable through a link.
+    for (const value of [
+      STRIPE_CUSTOMER.shippingName,
+      STRIPE_CUSTOMER.email,
+      STRIPE_CUSTOMER.phone,
+      STRIPE_ADDRESS.line1,
+    ]) {
+      await expect(main).not.toContainText(value);
+    }
+    expect(await page.content()).not.toContain(STRIPE_CUSTOMER.email);
+    // The bought items leave this browser's cart.
+    await expect(badge(page)).toHaveCount(0);
+    await expectNoAxeViolations(page);
+
+    const [order] = await pendingOrdersFor(product.id);
+    expect(order).toMatchObject({
+      paymentStatus: "PAID",
+      customerName: STRIPE_CUSTOMER.shippingName,
+      email: STRIPE_CUSTOMER.email,
+      addressLine1: STRIPE_ADDRESS.line1,
+      country: "SE",
+    });
+    expect(order!.reservations.map((r) => r.status)).toEqual(["CONSUMED"]);
+    const stored = await checkoutDb().product.findUniqueOrThrow({
+      where: { id: product.id },
+    });
+    expect(stored.stockOnHand).toBe(3);
+
+    // Reloading the confirmation removes nothing more.
+    await page.goto("/");
+    await page.evaluate(
+      (value) => window.localStorage.setItem("heavycards:cart", value),
+      JSON.stringify({ v: 1, lines: [{ id: product.id, q: 1 }] }),
+    );
+    await page.goto(confirmation(sessionId));
+    await expect(heading(page, "Tack för din beställning!")).toBeVisible();
+    await expect(badge(page)).toHaveText("1");
+  });
+
+  test("only the purchased items are cleared; products added after starting checkout stay", async ({
+    page,
+  }) => {
+    const bought = await createTestProduct();
+    const later = await createTestProduct();
+    const sessionId = await goToStripe(page, [
+      { product: bought, quantity: 1 },
+    ]);
+
+    // Back in the store (or in another tab) the customer adds something else.
+    await page.goto("/");
+    await page.evaluate(
+      (value) => window.localStorage.setItem("heavycards:cart", value),
+      JSON.stringify({
+        v: 1,
+        lines: [
+          { id: bought.id, q: 1 },
+          { id: later.id, q: 2 },
+        ],
+      }),
+    );
+    await payAtStripe(sessionId);
+    await sendStripeEvent(
+      page.request,
+      "checkout.session.completed",
+      sessionId,
+    );
+
+    await page.goto(confirmation(sessionId));
+
+    await expect(heading(page, "Tack för din beställning!")).toBeVisible();
+    await expect(badge(page)).toHaveText("2");
+    await cartButton(page).click();
+    await expect(drawer(page).getByTestId("cart-line")).toHaveCount(1);
+    await expect(drawer(page)).toContainText(later.name);
+  });
+
+  test("another browser opening the confirmation link keeps its own cart", async ({
+    page,
+    browser,
+  }) => {
+    const product = await createTestProduct();
+    const sessionId = await goToStripe(page, [{ product, quantity: 1 }]);
+    await payAtStripe(sessionId);
+    await sendStripeEvent(
+      page.request,
+      "checkout.session.completed",
+      sessionId,
+    );
+
+    const other = await browser.newPage();
+    try {
+      await plantCart(other, [{ product, quantity: 1 }]);
+      await other.goto(confirmation(sessionId));
+      await expect(heading(other, "Tack för din beställning!")).toBeVisible();
+      await expect(badge(other)).toHaveText("1");
+    } finally {
+      await other.close();
+    }
+  });
+
+  test("while pending the page says so, then updates by itself once Stripe confirms", async ({
+    page,
+  }) => {
+    const product = await createTestProduct();
+    const sessionId = await goToStripe(page, [{ product, quantity: 1 }]);
+
+    await page.goto(confirmation(sessionId));
+    await expect(
+      heading(page, "Tack! Vi kontrollerar din betalning."),
+    ).toBeVisible();
+    await expect(page.getByRole("main")).not.toContainText(
+      "Betalningen är bekräftad",
+    );
+    await expect(badge(page)).toHaveText("1"); // nothing cleared yet
+
+    await payAtStripe(sessionId);
+    await sendStripeEvent(
+      page.request,
+      "checkout.session.completed",
+      sessionId,
+    );
+
+    await expect(heading(page, "Tack för din beställning!")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(badge(page)).toHaveCount(0);
+  });
+
+  test("an expired checkout says so and keeps the cart", async ({ page }) => {
+    const product = await createTestProduct({ stockOnHand: 1 });
+    const sessionId = await goToStripe(page, [{ product, quantity: 1 }]);
+
+    await expireAtStripe(sessionId);
+    await sendStripeEvent(page.request, "checkout.session.expired", sessionId);
+    await page.goto(confirmation(sessionId));
+
+    await expect(heading(page, "Betalningen genomfördes inte")).toBeVisible();
+    await expect(badge(page)).toHaveText("1");
+    const [order] = await pendingOrdersFor(product.id);
+    expect(order).toMatchObject({ paymentStatus: "EXPIRED" });
+    expect(order!.reservations[0]!.status).toBe("RELEASED");
+    await expectNoAxeViolations(page);
+  });
+
+  test("a failed delayed payment says so and keeps the cart", async ({
+    page,
+  }) => {
+    const product = await createTestProduct();
+    const sessionId = await goToStripe(page, [{ product, quantity: 1 }]);
+    await payAtStripe(sessionId, { async: true });
+    await sendStripeEvent(
+      page.request,
+      "checkout.session.completed",
+      sessionId,
+    );
+
+    await page.goto(confirmation(sessionId));
+    await expect(
+      heading(page, "Tack! Vi kontrollerar din betalning."),
+    ).toBeVisible();
+
+    await failDelayedPaymentAtStripe(sessionId);
+    await sendStripeEvent(
+      page.request,
+      "checkout.session.async_payment_failed",
+      sessionId,
+    );
+    await page.reload();
+
+    await expect(heading(page, "Betalningen gick inte igenom")).toBeVisible();
+    await expect(badge(page)).toHaveText("1");
+    const [order] = await pendingOrdersFor(product.id);
+    expect(order).toMatchObject({ paymentStatus: "FAILED" });
+  });
+
+  test("the webhook refuses unsigned or wrongly signed events", async ({
+    page,
+  }) => {
+    const product = await createTestProduct();
+    const sessionId = await goToStripe(page, [{ product, quantity: 1 }]);
+    await payAtStripe(sessionId);
+
+    const forged = await sendStripeEvent(
+      page.request,
+      "checkout.session.completed",
+      sessionId,
+      { secret: "whsec_forged" },
+    );
+    const unsigned = await page.request.post("/api/stripe/webhook", {
+      data: { type: "checkout.session.completed" },
+    });
+
+    expect(forged.status()).toBe(400);
+    expect(unsigned.status()).toBe(400);
+    const [order] = await pendingOrdersFor(product.id);
+    expect(order).toMatchObject({ paymentStatus: "PENDING" });
+  });
+
+  test("the reconciliation endpoint is not public", async ({ page }) => {
+    const response = await page.request.get("/api/cron/reconcile-checkouts");
+    expect(response.status()).toBe(401);
   });
 });

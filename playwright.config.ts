@@ -3,7 +3,11 @@ import { existsSync } from "node:fs";
 import { defineConfig, devices } from "@playwright/test";
 
 import { EMAIL_OUTBOX_DIR } from "./e2e/admin-helpers";
-import { E2E_STORAGE_DIR } from "./e2e/storage-dir";
+import {
+  E2E_STORAGE_DIR,
+  E2E_STRIPE_STATE_DIR,
+  E2E_WEBHOOK_SECRET,
+} from "./e2e/storage-dir";
 
 // Some tests look up seeded product IDs (read-only). Mirror Next.js and
 // prisma.config.ts for local runs; CI provides DATABASE_URL directly.
@@ -87,6 +91,10 @@ export default defineConfig({
       // Checkout never contacts Stripe in E2E: the in-process fake returns
       // checkout.stripe.com URLs, which the tests intercept.
       PAYMENT_GATEWAY: "fake",
+      // Tests play Stripe by editing these session files and sending signed
+      // webhooks to the real endpoint.
+      FAKE_STRIPE_STATE_DIR: E2E_STRIPE_STATE_DIR,
+      STRIPE_WEBHOOK_SECRET: E2E_WEBHOOK_SECRET,
     },
   },
 });

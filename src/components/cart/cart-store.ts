@@ -88,6 +88,8 @@ type Dependencies = {
   /** Leaves the page for the payment URL. */
   navigate?: (url: string) => void;
   newAttemptId?: () => string;
+  /** Lowercase hex SHA-256 (Web Crypto in the browser). */
+  sha256?: (text: string) => Promise<string>;
 };
 
 const initialState: CartStoreState = {
@@ -417,6 +419,45 @@ export class CartStore {
     this.announce([message.title, ...message.details].join(" "));
   }
 
+  /**
+   * Called by the confirmation page once the database says the order is
+   * paid. Removes exactly what was bought, and only in the browser that
+   * started that checkout (its stored attempt must hash to `attemptHash`),
+   * only once (the attempt record is then cleared). Products or quantities
+   * added after the checkout started, in this or another tab, stay.
+   */
+  async completePaidCheckout(
+    attemptHash: string,
+    purchased: ReadonlyArray<{ productId: string; quantity: number }>,
+  ): Promise<boolean> {
+    const attempt = this.readAttempt();
+    if (!attempt) return false;
+    let hash: string;
+    try {
+      hash = await (this.deps.sha256 ?? sha256Hex)(attempt.id);
+    } catch {
+      return false; // No Web Crypto: keep the cart rather than guess.
+    }
+    if (hash !== attemptHash) return false;
+
+    let cart = this.state.cart;
+    for (const { productId, quantity } of purchased) {
+      const remaining = lineQuantity(cart, productId) - quantity;
+      cart =
+        remaining > 0
+          ? setLineQuantity(cart, productId, remaining)
+          : removeFromCart(cart, productId);
+    }
+    this.commit(cart);
+    this.clearAttempt();
+    this.announce(
+      totalQuantity(cart) === 0
+        ? "Tack för din beställning! Kundvagnen har tömts."
+        : "Tack för din beställning! De köpta produkterna har tagits bort från kundvagnen.",
+    );
+    return true;
+  }
+
   /** After returning with the browser's back button (page cache). */
   resetCheckout() {
     if (this.state.checkout.status !== "idle") {
@@ -445,6 +486,15 @@ export class CartStore {
       // Corrupt or blocked storage: fall back to this page view's attempt.
     }
     return this.attemptInMemory;
+  }
+
+  private clearAttempt() {
+    this.attemptInMemory = null;
+    try {
+      this.deps.storage?.setItem(CHECKOUT_ATTEMPT_STORAGE_KEY, "null");
+    } catch {
+      // Blocked storage: nothing was stored.
+    }
   }
 
   private writeAttempt(attempt: StoredAttempt) {
@@ -478,4 +528,14 @@ export class CartStore {
     this.set({ announcement: "" });
     setTimeout(() => this.set({ announcement: message }), 50);
   }
+}
+
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(text),
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }

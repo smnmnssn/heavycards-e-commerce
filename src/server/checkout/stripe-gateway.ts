@@ -1,5 +1,10 @@
 import Stripe from "stripe";
 
+import {
+  succeededRefundTotal,
+  type CheckoutSessionState,
+} from "@/server/domain/payment";
+
 import type {
   CheckoutGateway,
   CheckoutSessionInput,
@@ -27,8 +32,9 @@ const STRIPE_API_VERSION = "2026-09-30.endive";
 
 type SessionsApi = Pick<
   Stripe["checkout"]["sessions"],
-  "create" | "expire" | "retrieve"
+  "create" | "expire" | "retrieve" | "list"
 >;
+type RefundsApi = Pick<Stripe["refunds"], "list">;
 
 /** Only these countries can be chosen as the shipping address (V1: Sweden). */
 export const ALLOWED_SHIPPING_COUNTRIES = ["SE"] as const;
@@ -95,7 +101,9 @@ export function buildCheckoutSessionParams(
 }
 
 export class StripeCheckoutGateway implements CheckoutGateway {
-  constructor(private readonly sessions: SessionsApi) {}
+  constructor(
+    private readonly api: { sessions: SessionsApi; refunds?: RefundsApi },
+  ) {}
 
   static fromSecretKey(secretKey: string): StripeCheckoutGateway {
     const stripe = new Stripe(secretKey, {
@@ -105,14 +113,17 @@ export class StripeCheckoutGateway implements CheckoutGateway {
       timeout: 20_000,
       appInfo: { name: "HeavyCards" },
     });
-    return new StripeCheckoutGateway(stripe.checkout.sessions);
+    return new StripeCheckoutGateway({
+      sessions: stripe.checkout.sessions,
+      refunds: stripe.refunds,
+    });
   }
 
   async createCheckoutSession(
     input: CheckoutSessionInput,
     { idempotencyKey }: { idempotencyKey: string },
   ): Promise<CreatedCheckoutSession> {
-    const session = await this.sessions.create(
+    const session = await this.api.sessions.create(
       buildCheckoutSessionParams(input),
       { idempotencyKey },
     );
@@ -130,15 +141,101 @@ export class StripeCheckoutGateway implements CheckoutGateway {
 
   async expireCheckoutSession(sessionId: string): Promise<ExpireOutcome> {
     try {
-      const session = await this.sessions.expire(sessionId);
+      const session = await this.api.sessions.expire(sessionId);
       return toOutcome(session.status);
     } catch {
       // Expiring fails for sessions that are no longer open (already
       // complete or expired); ask Stripe which one it is.
-      const session = await this.sessions.retrieve(sessionId);
+      const session = await this.api.sessions.retrieve(sessionId);
       return toOutcome(session.status);
     }
   }
+
+  async retrieveCheckoutSession(
+    sessionId: string,
+  ): Promise<CheckoutSessionState> {
+    // Stripe's fulfilment guide: always read the session from the API, never
+    // from the event payload, which can be a stale snapshot.
+    const session = await this.api.sessions.retrieve(sessionId, {
+      expand: ["payment_intent.latest_charge"],
+    });
+    return toSessionState(session);
+  }
+
+  async findCheckoutSessionIdForPayment(
+    paymentIntentId: string,
+  ): Promise<string | null> {
+    const page = await this.api.sessions.list({
+      payment_intent: paymentIntentId,
+      limit: 1,
+    });
+    return page.data[0]?.id ?? null;
+  }
+
+  async retrieveRefundedAmount(
+    paymentIntentId: string,
+  ): Promise<{ amountRefunded: number; currency: string }> {
+    if (!this.api.refunds) throw new Error("Refunds API not configured");
+    // Every refund of the payment, in all states, as Stripe reports them now;
+    // which ones count is decided by the domain rule.
+    const refunds = [];
+    for await (const refund of this.api.refunds.list({
+      payment_intent: paymentIntentId,
+      limit: 100,
+    })) {
+      refunds.push(refund);
+    }
+    return succeededRefundTotal(refunds);
+  }
+}
+
+/** Maps a Stripe Checkout Session to the provider-neutral state. */
+export function toSessionState(
+  session: Stripe.Checkout.Session,
+): CheckoutSessionState {
+  const intent =
+    session.payment_intent && typeof session.payment_intent === "object"
+      ? session.payment_intent
+      : null;
+  const charge =
+    intent?.latest_charge && typeof intent.latest_charge === "object"
+      ? intent.latest_charge
+      : null;
+  const shipping = session.collected_information?.shipping_details ?? null;
+  return {
+    id: session.id,
+    status: session.status,
+    paymentStatus: session.payment_status,
+    amountTotal: session.amount_total,
+    currency: session.currency,
+    paymentIntent: intent
+      ? {
+          id: intent.id,
+          status: intent.status,
+          paidAt:
+            charge?.status === "succeeded"
+              ? new Date(charge.created * 1000)
+              : null,
+        }
+      : typeof session.payment_intent === "string"
+        ? { id: session.payment_intent, status: "unknown", paidAt: null }
+        : null,
+    customer: {
+      shippingName: shipping?.name ?? null,
+      name: session.customer_details?.name ?? null,
+      email: session.customer_details?.email ?? null,
+      phone: session.customer_details?.phone ?? null,
+    },
+    shippingAddress: shipping
+      ? {
+          line1: shipping.address.line1 ?? null,
+          line2: shipping.address.line2 ?? null,
+          postalCode: shipping.address.postal_code ?? null,
+          city: shipping.address.city ?? null,
+          country: shipping.address.country ?? null,
+        }
+      : null,
+  };
 }
 
 function toOutcome(status: Stripe.Checkout.Session.Status | null) {

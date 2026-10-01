@@ -23,7 +23,8 @@ describe("parseServerEnv", () => {
         from: "HeavyCards <no-reply@heavycards.invalid>",
       },
       storage: { provider: "local", directory: ".storage" },
-      payments: { gateway: "stripe", secretKey: null },
+      payments: { gateway: "stripe", secretKey: null, webhookSecret: null },
+      cronSecret: null,
     });
   });
 
@@ -191,6 +192,8 @@ describe("parseServerEnv: email", () => {
       APP_URL: "https://heavycards.se",
       BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_test",
       STRIPE_SECRET_KEY: "sk_live_unittest",
+      STRIPE_WEBHOOK_SECRET: "whsec_unittest",
+      CRON_SECRET: "cron-secret-unittest-0123",
     };
     expect(() => parse(production)).toThrow(/RESEND_API_KEY and EMAIL_FROM/);
     expect(
@@ -281,6 +284,8 @@ describe("parseServerEnv: image storage", () => {
       RESEND_API_KEY: "re_test",
       EMAIL_FROM: "HeavyCards <a@b.se>",
       STRIPE_SECRET_KEY: "sk_live_unittest",
+      STRIPE_WEBHOOK_SECRET: "whsec_unittest",
+      CRON_SECRET: "cron-secret-unittest-0123",
     };
     expect(() => parse(production)).toThrow(/BLOB_READ_WRITE_TOKEN: required/);
     expect(
@@ -310,13 +315,20 @@ describe("parseServerEnv: payments", () => {
     RESEND_API_KEY: "re_test",
     EMAIL_FROM: "HeavyCards <a@b.se>",
     BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_test",
+    STRIPE_WEBHOOK_SECRET: "whsec_unittest",
+    CRON_SECRET: "cron-secret-unittest-0123",
   };
 
   it("uses Stripe by default and works without a key outside production", () => {
-    expect(parse().payments).toEqual({ gateway: "stripe", secretKey: null });
+    expect(parse().payments).toEqual({
+      gateway: "stripe",
+      secretKey: null,
+      webhookSecret: null,
+    });
     expect(parse({ STRIPE_SECRET_KEY: "sk_test_abc123" }).payments).toEqual({
       gateway: "stripe",
       secretKey: "sk_test_abc123",
+      webhookSecret: null,
     });
     expect(
       parse({ STRIPE_SECRET_KEY: "rk_test_abc123" }).payments,
@@ -346,7 +358,37 @@ describe("parseServerEnv: payments", () => {
     ).toThrow(/a live key is required/);
     expect(
       parse({ ...production, STRIPE_SECRET_KEY: "sk_live_abc123" }).payments,
-    ).toEqual({ gateway: "stripe", secretKey: "sk_live_abc123" });
+    ).toEqual({
+      gateway: "stripe",
+      secretKey: "sk_live_abc123",
+      webhookSecret: "whsec_unittest",
+    });
+  });
+
+  it("requires the webhook signing secret and the cron secret in Vercel production", () => {
+    const live = { ...production, STRIPE_SECRET_KEY: "sk_live_abc123" };
+    expect(() => parse({ ...live, STRIPE_WEBHOOK_SECRET: undefined })).toThrow(
+      /STRIPE_WEBHOOK_SECRET: required/,
+    );
+    expect(() => parse({ ...live, CRON_SECRET: undefined })).toThrow(
+      /CRON_SECRET: required/,
+    );
+    expect(parse(live).cronSecret).toBe("cron-secret-unittest-0123");
+  });
+
+  it("validates webhook and cron secrets without echoing them", () => {
+    const badWebhook = () =>
+      parse({ STRIPE_WEBHOOK_SECRET: "not-a-whsec-secret" });
+    expect(badWebhook).toThrow(/STRIPE_WEBHOOK_SECRET/);
+    expect(badWebhook).toThrow(
+      expect.objectContaining({
+        message: expect.not.stringContaining("not-a-whsec-secret"),
+      }),
+    );
+    expect(() => parse({ CRON_SECRET: "short" })).toThrow(/CRON_SECRET/);
+    expect(
+      parse({ STRIPE_WEBHOOK_SECRET: "whsec_abc_123" }).payments,
+    ).toMatchObject({ webhookSecret: "whsec_abc_123" });
   });
 
   it("rejects malformed keys without echoing them", () => {
@@ -362,7 +404,16 @@ describe("parseServerEnv: payments", () => {
   it("accepts the fake gateway only for local runs", () => {
     expect(parse({ PAYMENT_GATEWAY: "fake" }).payments).toEqual({
       gateway: "fake",
+      stateDir: null,
+      webhookSecret: null,
     });
+    expect(
+      parse({ PAYMENT_GATEWAY: "fake", FAKE_STRIPE_STATE_DIR: ".e2e-stripe" })
+        .payments,
+    ).toMatchObject({ stateDir: ".e2e-stripe" });
+    expect(() => parse({ FAKE_STRIPE_STATE_DIR: ".e2e-stripe" })).toThrow(
+      /only used with PAYMENT_GATEWAY=fake/,
+    );
     expect(() =>
       parse({
         PAYMENT_GATEWAY: "fake",

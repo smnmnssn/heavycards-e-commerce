@@ -5,10 +5,18 @@ import type { ReservationStatus } from "@/generated/prisma/enums";
  *
  *   availableToSell = stockOnHand − Σ quantity of holding reservations
  *
- * A reservation holds stock only while it is ACTIVE *and* unexpired. Treating
- * expired-but-unreleased reservations as non-holding means a missed webhook or
- * a failed cleanup run can never block inventory permanently; cleanup merely
- * tidies the status afterwards.
+ * An ACTIVE reservation holds stock
+ *
+ * - while it is **awaiting payment** (attached to a Stripe Checkout Session the
+ *   customer can pay), whatever its expiresAt: only Stripe's answer (paid →
+ *   CONSUMED; expired or failed → RELEASED) ends the hold, applied by a
+ *   webhook or by reconciliation. A clock passing expiresAt must never free
+ *   units Stripe may already have been paid for (Milestone 9). Its expiresAt
+ *   is then only the time reconciliation should ask Stripe;
+ * - otherwise (a provisional hold whose payment page was never handed out)
+ *   only until expiresAt, so a crashed checkout never blocks stock.
+ *
+ * CONSUMED and RELEASED reservations never hold.
  *
  * This function defines the rule. Checkout (Milestone 8) evaluates the same
  * rule in SQL inside a transaction that locks the product rows, so concurrent
@@ -19,6 +27,7 @@ export type ReservationLike = {
   quantity: number;
   status: ReservationStatus;
   expiresAt: Date;
+  awaitingPayment: boolean;
 };
 
 export function isReservationHolding(
@@ -27,7 +36,8 @@ export function isReservationHolding(
 ): boolean {
   return (
     reservation.status === "ACTIVE" &&
-    reservation.expiresAt.getTime() > now.getTime()
+    (reservation.awaitingPayment ||
+      reservation.expiresAt.getTime() > now.getTime())
   );
 }
 

@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
+import { readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
+import type { APIRequestContext } from "@playwright/test";
+import Stripe from "stripe";
 
 import type { PrismaClient } from "../src/generated/prisma/client";
 import { createPrismaClient } from "../src/lib/db/create-client";
+
+import { E2E_STRIPE_STATE_DIR, E2E_WEBHOOK_SECRET } from "./storage-dir";
 
 /*
  * Data for the checkout E2E tests. Products are created per test with the
@@ -124,7 +131,11 @@ export async function removeCheckoutTestData(): Promise<void> {
     select: { id: true },
   });
   const orderIds = orders.map((order) => order.id);
+  await rm(E2E_STRIPE_STATE_DIR, { recursive: true, force: true });
   await db.$transaction([
+    db.auditLog.deleteMany({
+      where: { entityType: "Order", entityId: { in: orderIds } },
+    }),
     db.inventoryReservation.deleteMany({
       where: { orderId: { in: orderIds } },
     }),
@@ -132,4 +143,100 @@ export async function removeCheckoutTestData(): Promise<void> {
     db.order.deleteMany({ where: { id: { in: orderIds } } }),
     db.product.deleteMany({ where: { id: { in: productIds } } }),
   ]);
+}
+
+// --- Playing Stripe -----------------------------------------------------------------
+
+type FakeSessionFile = {
+  id: string;
+  status: string;
+  paymentStatus: string;
+  paymentIntent: { id: string; status: string; paidAt: string | null } | null;
+  customer: Record<string, string | null>;
+  shippingAddress: Record<string, string | null> | null;
+  [key: string]: unknown;
+};
+
+async function patchFakeSession(
+  sessionId: string,
+  patch: (session: FakeSessionFile) => FakeSessionFile,
+) {
+  const file = join(E2E_STRIPE_STATE_DIR, `${sessionId}.json`);
+  const session = JSON.parse(await readFile(file, "utf8")) as FakeSessionFile;
+  await writeFile(file, JSON.stringify(patch(session), null, 2));
+}
+
+/** The test customer, as Stripe Checkout would have collected them. */
+export const STRIPE_CUSTOMER = {
+  shippingName: "Kim Kassatest",
+  name: "Kim Kassatest",
+  email: "kim.kassatest@example.com",
+  phone: "+46700000000",
+};
+export const STRIPE_ADDRESS = {
+  line1: "Kassagatan 7",
+  line2: null,
+  postalCode: "111 22",
+  city: "Stockholm",
+  country: "SE",
+};
+
+/** The customer pays on Stripe's page (or starts a delayed payment). */
+export function payAtStripe(sessionId: string, { async = false } = {}) {
+  return patchFakeSession(sessionId, (session) => ({
+    ...session,
+    status: "complete",
+    paymentStatus: async ? "unpaid" : "paid",
+    paymentIntent: {
+      id: `pi_test_e2e${randomUUID().slice(0, 8)}`,
+      status: async ? "processing" : "succeeded",
+      paidAt: async ? null : new Date().toISOString(),
+    },
+    customer: STRIPE_CUSTOMER,
+    shippingAddress: STRIPE_ADDRESS,
+  }));
+}
+
+export function failDelayedPaymentAtStripe(sessionId: string) {
+  return patchFakeSession(sessionId, (session) => ({
+    ...session,
+    paymentIntent: {
+      ...session.paymentIntent!,
+      status: "requires_payment_method",
+    },
+  }));
+}
+
+export function expireAtStripe(sessionId: string) {
+  return patchFakeSession(sessionId, (session) => ({
+    ...session,
+    status: "expired",
+  }));
+}
+
+/** Sends a correctly signed Stripe event to the test server's webhook. */
+export async function sendStripeEvent(
+  request: APIRequestContext,
+  type: string,
+  sessionId: string,
+  { secret = E2E_WEBHOOK_SECRET }: { secret?: string } = {},
+) {
+  const payload = JSON.stringify({
+    id: `evt_e2e_${randomUUID().replaceAll("-", "")}`,
+    object: "event",
+    type,
+    created: Math.floor(Date.now() / 1000),
+    livemode: false,
+    data: { object: { id: sessionId, object: "checkout.session" } },
+  });
+  return request.post("/api/stripe/webhook", {
+    headers: {
+      "content-type": "application/json",
+      "stripe-signature": Stripe.webhooks.generateTestHeaderString({
+        payload,
+        secret,
+      }),
+    },
+    data: payload,
+  });
 }

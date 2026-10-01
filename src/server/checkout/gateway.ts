@@ -1,3 +1,5 @@
+import type { CheckoutSessionState } from "@/server/domain/payment";
+
 /*
  * The only boundary between checkout and the payment provider. Checkout code
  * depends on this interface, so domain and database tests run with
@@ -38,7 +40,8 @@ export type CreatedCheckoutSession = {
 
 /**
  * - `expired`: the session can no longer be paid.
- * - `complete`: the customer finished checkout (payment handled in M9).
+ * - `complete`: the customer finished checkout (its payment outcome is
+ *   applied by src/server/payments).
  * - `open`: still payable; expiring it failed.
  */
 export type ExpireOutcome = "expired" | "complete" | "open";
@@ -55,4 +58,24 @@ export interface CheckoutGateway {
 
   /** Stops an open session from accepting payment. */
   expireCheckoutSession(sessionId: string): Promise<ExpireOutcome>;
+
+  /**
+   * The session's current, authoritative state, including its payment and
+   * the customer details collected by Checkout. Throws when the provider is
+   * unreachable (callers must then keep stock reserved).
+   */
+  retrieveCheckoutSession(sessionId: string): Promise<CheckoutSessionState>;
+
+  /** The Checkout Session that created a payment, if any. */
+  findCheckoutSessionIdForPayment(
+    paymentIntentId: string,
+  ): Promise<string | null>;
+
+  /**
+   * The amount successfully refunded on a payment, from the provider's
+   * current refund list (succeeded refunds only; see succeededRefundTotal).
+   */
+  retrieveRefundedAmount(
+    paymentIntentId: string,
+  ): Promise<{ amountRefunded: number; currency: string }>;
 }

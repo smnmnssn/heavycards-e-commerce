@@ -16,15 +16,16 @@ const reservation = (
   quantity: 1,
   status: "ACTIVE",
   expiresAt: inMinutes(30),
+  awaitingPayment: false,
   ...overrides,
 });
 
 describe("isReservationHolding", () => {
-  it("holds stock while ACTIVE and unexpired", () => {
+  it("holds a provisional reservation while ACTIVE and unexpired", () => {
     expect(isReservationHolding(reservation(), now)).toBe(true);
   });
 
-  it("stops holding at the expiry instant even if cleanup has not run", () => {
+  it("stops holding a provisional reservation at the expiry instant even if cleanup has not run", () => {
     expect(isReservationHolding(reservation({ expiresAt: now }), now)).toBe(
       false,
     );
@@ -32,6 +33,28 @@ describe("isReservationHolding", () => {
       isReservationHolding(reservation({ expiresAt: inMinutes(-1) }), now),
     ).toBe(false);
   });
+
+  it("keeps holding a reservation awaiting payment after expiresAt", () => {
+    // Stripe may have accepted the payment; only its outcome ends the hold.
+    expect(
+      isReservationHolding(
+        reservation({ awaitingPayment: true, expiresAt: inMinutes(-600) }),
+        now,
+      ),
+    ).toBe(true);
+  });
+
+  it.each(["CONSUMED", "RELEASED"] as const)(
+    "does not hold stock when %s, even if it was awaiting payment",
+    (status) => {
+      expect(
+        isReservationHolding(
+          reservation({ status, awaitingPayment: true }),
+          now,
+        ),
+      ).toBe(false);
+    },
+  );
 
   it.each(["CONSUMED", "RELEASED"] as const)(
     "does not hold stock when %s",
@@ -52,9 +75,14 @@ describe("availableToSell", () => {
       reservation({ quantity: 3, status: "CONSUMED" }),
       reservation({ quantity: 4, status: "RELEASED" }),
       reservation({ quantity: 5, expiresAt: inMinutes(-5) }),
+      reservation({
+        quantity: 1,
+        expiresAt: inMinutes(-5),
+        awaitingPayment: true,
+      }),
     ];
 
-    expect(availableToSell(10, reservations, now)).toBe(8);
+    expect(availableToSell(10, reservations, now)).toBe(7);
   });
 
   it("reports the last unit as unavailable once reserved", () => {

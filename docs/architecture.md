@@ -1237,3 +1237,329 @@ sessions in memory, honours idempotency keys and returns
   are queued correctly; re-check on Prisma upgrades.
 - Product pages are ISR (60 s), so a just-reserved last unit can still show
   "I lager" there briefly; the drawer and checkout always use live data.
+
+## Milestone 9 — Stripe webhooks and order finalization (2026-10-02)
+
+Stripe is now the only source of payment truth. Schema details are in
+[database.md](database.md), routes in [routes.md](routes.md). No emails are
+sent (Milestone 10) and no review tokens are created (Milestone 11).
+
+### Layers
+
+| Layer                                                                      | Module                                                                                                           |
+| -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Payment rules: transitions, session classification, customer data, refunds | `src/server/domain/payment.ts` (pure)                                                                            |
+| Holding rule for reservations (domain, SQL fragment, Prisma filter)        | `src/server/domain/inventory.ts`, `src/server/data/reservations.ts`                                              |
+| The one payment-finalization implementation (session → order)              | `src/server/payments/session-sync.ts`                                                                            |
+| Refund synchronization                                                     | `src/server/payments/refund-sync.ts`                                                                             |
+| Webhook: signature, idempotency, dispatch                                  | `src/server/payments/webhook.ts`                                                                                 |
+| Reconciliation service and its cron entry point                            | `src/server/payments/{reconcile,cron}.ts`                                                                        |
+| Revalidation after inventory changes (reuses Milestone 7 targets)          | `src/server/payments/revalidate.ts`                                                                              |
+| Gateway reads: session state, session of a payment, refunded amount        | `src/server/checkout/{gateway,stripe-gateway,fake-gateway}.ts`                                                   |
+| Routes (thin)                                                              | `src/app/api/stripe/webhook`, `src/app/api/cron/reconcile-checkouts`                                             |
+| Confirmation page states and cart clearing                                 | `src/app/(store)/kassa/bekraftelse`, `src/components/cart/checkout-return.tsx`, `CartStore.completePaidCheckout` |
+
+Services take the Prisma client and gateway as arguments, so the DB tests run
+the production code with the fake gateway and signed events.
+
+### Stripe event model (verified 2026-10-02)
+
+Checked against Stripe's current Checkout fulfillment guide, event-type
+reference and refund guide (API `2026-09-30.endive`):
+
+- Fulfilment must be webhook-driven and must not rely on the landing page.
+  Stripe recommends one idempotent "fulfill this session" function that
+  **retrieves the session from the API** (not from the event payload) and
+  checks `payment_status`, and that may be called repeatedly and
+  concurrently.
+- Delayed payment methods complete the session with `payment_status: unpaid`
+  and later send `checkout.session.async_payment_succeeded` or
+  `async_payment_failed`.
+- `charge.refunded` covers full and partial refunds; `refund.created`,
+  `refund.updated` and `refund.failed` report refund status changes
+  (`charge.refund.updated` is deprecated). Refund statuses are `pending`,
+  `requires_action`, `succeeded`, `failed` and `canceled`; failed and
+  cancelled refunds return the money to the merchant.
+
+**Handled events** (the endpoint must be subscribed to exactly these):
+
+| Event                                      | HeavyCards effect                                                      |
+| ------------------------------------------ | ---------------------------------------------------------------------- |
+| `checkout.session.completed`               | paid → finalize; delayed payment → store the payment ID, keep the hold |
+| `checkout.session.async_payment_succeeded` | finalize                                                               |
+| `checkout.session.async_payment_failed`    | release the stock, order FAILED                                        |
+| `checkout.session.expired`                 | release the stock, order EXPIRED                                       |
+| `charge.refunded`                          | synchronize the refunded amount and status                             |
+| `refund.created`, `.updated`, `.failed`    | synchronize the refunded amount and status                             |
+
+Every other verified event is acknowledged (200), recorded and ignored.
+
+### Signature and idempotency
+
+- `POST /api/stripe/webhook` reads the raw body (≤ 512 KB, hard limit) and
+  verifies it with `Stripe.webhooks.constructEvent` and
+  `STRIPE_WEBHOOK_SECRET`. The SDK enforces the default 5-minute timestamp
+  tolerance, which limits replays of captured requests. A missing or invalid
+  signature answers 400 and nothing is read or logged from the body. Without
+  a configured secret the endpoint answers 503, so Stripe retries later.
+- A verified event is only used to learn **which** session or payment
+  changed. Its current state is then read from Stripe's API, so a stale
+  snapshot in a late or reordered event can never be applied.
+- **Event IDs** are stored in `stripe_events` (unique) inside the same
+  transaction as the event's effects. A known event is answered 200 without
+  work; simultaneous deliveries roll the loser back. Processing errors
+  (Stripe unreachable, database errors) answer 500 without recording the
+  event, so Stripe retries for up to three days; nothing is released
+  meanwhile.
+- **State-based effects.** Every change requires the order to be PENDING
+  (locked `FOR UPDATE`) and its reservations ACTIVE, and moves both on in
+  the same transaction. A replay, even under a new event ID, and
+  reconciliation running at the same time find nothing left to do. A second
+  guard rejects the transaction if the number of consumed reservations
+  differs from what was read.
+
+### Payment finalization (`syncCheckoutSession`)
+
+The single implementation, used by the webhook and by reconciliation:
+
+1. If no order has this session ID, record and ignore it, without calling
+   Stripe (sessions from other integrations or `stripe trigger`).
+2. Retrieve the session with `payment_intent.latest_charge` expanded.
+3. In one transaction (`lock_timeout` 5 s, deadlock retry): lock the order;
+   classify the session (`classifySession`) and act:
+
+| Stripe state                                                      | Order is PENDING                    | Order is paid / closed                               |
+| ----------------------------------------------------------------- | ----------------------------------- | ---------------------------------------------------- |
+| complete + paid                                                   | **finalize** (below)                | no change                                            |
+| complete + unpaid, PaymentIntent processing/action                | store the payment ID; keep the hold | no change                                            |
+| complete + unpaid, PaymentIntent requires_payment_method/canceled | release, **FAILED**                 | no change                                            |
+| expired                                                           | release, **EXPIRED**                | no change (a late expiry never touches a paid order) |
+| open                                                              | no change                           | no change                                            |
+| anything else (e.g. no_payment_required)                          | needs attention                     | no change                                            |
+
+**Finalize**, all in the same transaction:
+
+- Stripe's `amount_total` and currency must equal the order's total and
+  SEK. A mismatch is a security/operational error: nothing changes.
+- Customer data is validated from the session only (`fulfillmentDetails`):
+  `customerName` from the shipping name (one value, outer whitespace removed,
+  never split; the customer-details name only if no shipping name exists),
+  email, optional phone, address line 1 (and 2), postal code, city, and the
+  country must be SE. Values longer than their columns are refused, never
+  truncated.
+- Every reservation must be ACTIVE. The product rows are locked in id order
+  (the same order as checkout), `stockOnHand` is reduced by each
+  **reserved** quantity, and the reservations become CONSUMED. If an admin
+  had lowered stock below the reservation meanwhile, stock stops at 0 and
+  the shortfall is recorded in the audit entry; the payment is real, so the
+  order is still paid.
+- The order becomes PAID with `paidAt` (Stripe's charge time),
+  `stripePaymentIntentId`, the customer fields and country SE.
+  `fulfillmentStatus` stays NEW. Audit `MARK_ORDER_PAID` (system entry,
+  no personal data).
+
+**Needs attention.** A mismatch, missing customer data, reservations that are
+no longer active, or Stripe reporting payment for a checkout HeavyCards
+already closed leave the order unchanged: PENDING with its stock still
+reserved, never a malformed paid order and never overselling. A
+`PAYMENT_NEEDS_ATTENTION` audit entry is written once per order and problem,
+and the error is logged with IDs only. The event is recorded (a retry would
+not fix it); staff resolve it in the Stripe Dashboard and, from Milestone 12,
+in the admin order view.
+
+### Delayed webhooks and reservation expiry (correction of Milestone 8)
+
+Milestone 8 released an attached reservation by time alone, 15 minutes after
+the session's expiry. If Stripe accepted a payment before expiry but its
+webhook arrived later than that (Stripe retries for days), the units became
+sellable again before HeavyCards learned of the payment: a possible oversell.
+
+Fix (targeted; the Milestone 8 flow is otherwise unchanged):
+
+- `inventory_reservations.awaiting_payment` is set when the session is
+  attached, together with the existing expiry extension.
+- **When an ACTIVE reservation stops holding stock:** a provisional one
+  (never handed to Stripe's payment page) at `expiresAt`; one awaiting payment
+  **only when Stripe's outcome is applied**: paid → CONSUMED, expired or
+  failed → RELEASED. Every availability query uses the shared rule
+  (`holding = ACTIVE AND (awaiting_payment OR expires_at > now)`); the
+  provisional cleanup skips held reservations.
+- **Payment succeeded but its webhook is delayed:** the units stay reserved,
+  so nobody else can buy them; when the webhook (or reconciliation) arrives,
+  the order is finalized normally. Tested: a rival checkout hours later is
+  refused as sold out, and the late event then finalizes without
+  overselling.
+- **Missed expiration/failure webhook:** reconciliation (below) asks Stripe
+  once the reservation's `expiresAt` (session expiry + 15 minutes) has passed
+  and applies the answer through the same `syncCheckoutSession`.
+- **Stripe unavailable during reconciliation:** nothing is released; the
+  order's next check is moved 15 minutes forward (`RECHECK_AFTER_MS`) and
+  retried. The same applies while a delayed payment is still processing and
+  for orders that need attention, so a stuck order never starves the others.
+- The cost is that a reservation whose outcome Stripe cannot report holds its
+  stock until it can; correctness wins over freeing stock early.
+- Migration `20261002090000_payment_reconciliation` marked reservations of
+  existing pending, attached checkouts as awaiting payment.
+
+### Reconciliation
+
+- `reconcileCheckouts` (`src/server/payments/reconcile.ts`) selects pending
+  orders with a session whose held reservations are due (`expiresAt` passed),
+  oldest first, at most 25 per run, and calls `syncCheckoutSession` for each.
+  Outcomes paid, expired and failed end the hold; anything else (processing,
+  open, needs attention, errors) postpones the next check. It has no
+  scheduler dependency and is tested on its own.
+- **Entry points:**
+  - `GET /api/cron/reconcile-checkouts` for Vercel Cron, authorized by
+    `Authorization: Bearer CRON_SECRET` (constant-time comparison; refused
+    when no secret is configured). It also releases expired provisional
+    holds and revalidates affected pages. `vercel.json` schedules it daily
+    at 03:00 UTC, the most frequent schedule a Vercel Hobby plan accepts
+    (more frequent schedules fail Hobby deployments; verified 2026-10-02).
+    On Pro, use `*/15 * * * *`.
+  - After every `/api/checkout` request (`after()`), up to 3 overdue
+    checkouts are reconciled, so stock is freed while customers are active
+    even with a daily cron.
+- Runs may overlap or repeat (Vercel Cron is best effort and may invoke
+  twice): every step is idempotent under the order lock.
+- Refunds are not reconciled: Stripe retries refund events for three days,
+  and refunds change no inventory. A refund missed beyond that is visible in
+  the Stripe Dashboard.
+
+### Refund synchronization
+
+- Any refund event leads to the payment's order (by
+  `stripePaymentIntentId`). If the order is still PENDING or unknown (the
+  refund overtook the payment event), the payment's session is found via
+  Stripe and finalized first through `syncCheckoutSession`.
+- The refunded amount is read from Stripe, never from the event: the sum of
+  the payment's refunds whose status is **`succeeded`**
+  (`succeededRefundTotal` in `src/server/domain/payment.ts`, used by both
+  gateways). `refundedAmount` and the refund status therefore record money
+  actually returned, never money that might still be returned:
+  - `pending` and `requires_action` refunds do not count yet. The later
+    `refund.updated` (or `charge.refunded`) event re-reads the list, and the
+    refund counts from the moment Stripe reports it succeeded;
+  - `failed` and `canceled` refunds never count, so a refund that was pending
+    or awaiting action and then failed or was cancelled never changed the
+    order at all.
+
+  Stripe's `charge.amount_refunded` is not used because its handling of
+  pending and failed refunds is not documented. No extra payment state exists
+  for a refund in progress; it is visible in the Stripe Dashboard.
+
+- `refundState` on the succeeded total: 0 → PAID, the full total →
+  REFUNDED, in between → PARTIALLY_REFUNDED. Transitions follow
+  `PAYMENT_TRANSITIONS`, so a succeeded refund that later fails lowers the
+  state again but never makes the order unpaid, and an old success event can
+  never turn REFUNDED back into PAID.
+- `refundedAmount` equals Stripe's succeeded total (capped at the order total
+  to keep the CHECK invariant). Audit `SYNC_ORDER_REFUND` records each change;
+  events that change nothing (e.g. a refund only pending) write no entry.
+- **Refunds never change inventory** and never revalidate pages. Restocking a
+  returned item stays an explicit staff decision (PROJECT.md §35).
+
+### Confirmation page and the cart
+
+- `/kassa/bekraftelse?session_id=…` reads the order by the unguessable
+  session ID and shows only database state: processing (with an automatic
+  re-read after 2, 6, 14, 29 and 59 seconds), paid (order number, products,
+  quantities, total), refunded, expired or failed. It never calls Stripe and
+  never shows a name, email, phone or address. It stays `noindex, nofollow`
+  with `Referrer-Policy: no-referrer`. In production Stripe normally waits up
+  to 10 seconds for the `checkout.session.completed` webhook before
+  redirecting the customer, so the page is usually already paid.
+- **Cart clearing** happens only for a paid order, only in the browser that
+  started that checkout, and only once:
+  - the page passes the SHA-256 of the order's checkout attempt ID (which
+    reveals nothing else);
+  - `CartStore.completePaidCheckout` hashes the attempt ID stored in this
+    browser and compares;
+  - on a match it subtracts the purchased quantities from the cart (lines
+    reaching 0 are removed) and clears the stored attempt, so a reload or
+    another tab cannot subtract again;
+  - products or extra quantities added after checkout started stay.
+  - Pending, expired, failed, cancelled and unknown orders never clear the
+    cart, and another browser opening the link keeps its own cart.
+
+### Revalidation
+
+Finalization and released reservations change availability, so the
+Milestone 7 targets are refreshed through `revalidateCatalog` (homepage,
+listings, category and set pages, all product pages and the affected
+products' own URLs), from the webhook and cron route handlers and the
+checkout route's `after()` callback. Revalidation failures are logged and
+never fail payment processing; at worst pages are stale for the 60 s ISR
+window. Refunds revalidate nothing.
+
+### Logging
+
+`[payments]` log lines carry only the Stripe event ID and type, the
+HeavyCards order ID, the outcome or problem code, and an error's
+name/type/code/request ID. Never the body, signature, secret, customer name,
+email, phone or address. Tests assert this for signature failures.
+
+### Environment and configuration
+
+- `STRIPE_WEBHOOK_SECRET` (`whsec_…`): validated; required in Vercel
+  production.
+- `CRON_SECRET` (≥ 16 characters): validated; required in Vercel production.
+- `FAKE_STRIPE_STATE_DIR`: only with `PAYMENT_GATEWAY=fake` (E2E); refused
+  otherwise.
+- `vercel.json`: the daily reconciliation cron.
+- No new dependencies. The Stripe client gained `sessions.list` and
+  `refunds.list` calls; a restricted key therefore needs read access to
+  Checkout Sessions, PaymentIntents, Charges (expanded) and Refunds in addition to
+  writing Checkout Sessions.
+
+### Testing
+
+- **Unit:** the transition table (allowed and refused pairs, final states,
+  paid states never unpaid), session classification, amount/currency checks,
+  customer-data validation (name never split, no truncation, Sweden only),
+  refund states, the inventory holding rule, the Stripe gateway mapping and
+  refund summation, return-page states (no personal data, attempt hash), env
+  rules, and cart clearing (only this browser's checkout, once, later
+  additions kept, no Web Crypto → no change).
+- **DB** (`tests/db/payments.test.ts`, real PostgreSQL, signed events):
+  valid, wrong-secret, replayed-timestamp, tampered and unsigned webhooks;
+  unconfigured secret; unrelated events and unknown sessions; duplicate
+  event IDs, six simultaneous duplicate deliveries, different events plus
+  reconciliation racing; Stripe unreachable (500, nothing recorded, still
+  reserved, retry succeeds); full finalization (stock, CONSUMED, customer
+  fields, identifiers, audit without personal data, revalidation); success
+  replay; amount and currency mismatch; five kinds of missing or invalid
+  customer data; no phone; stock shortfall; expiry before payment and
+  repeated; late expiry after payment; delayed payment success and failure
+  (with a stale replay); an open session; partial, full, replayed,
+  reordered, failed and early refunds, never restocking; refunds for unknown
+  payments; **the delayed webhook after the nominal expiry with a rival
+  customer refused**; a lost paid webhook finalized by reconciliation; a
+  missed expiry released, twice idempotently; Stripe unavailable during
+  reconciliation (postponed, still reserved, resolved later); a delayed
+  payment postponed; only due checkouts checked; reconciliation racing a
+  webhook; the cron handler's authorization. Also a replay of the new
+  migration on pre-existing rows.
+- Mutation checks during development: reverting the holding rule to
+  Milestone 8's time-only rule makes the delayed-webhook, missed-expiry and
+  delayed-payment tests fail; removing the PENDING/ACTIVE guards makes the
+  concurrent-delivery tests fail.
+- **E2E** (`checkout` project): a verified payment shows the confirmation
+  with products and total, no personal data, stock reduced, reservation
+  consumed and the cart cleared (and not cleared again on reload); only
+  purchased items are cleared; another browser keeps its cart; the pending
+  page updates by itself after the webhook; expired and failed delayed
+  payments are shown honestly with the cart kept; forged and unsigned
+  webhooks are refused; the reconciliation route is not public; axe checks.
+
+### Production Stripe setup still required (Milestone 15)
+
+- Create the webhook endpoint `https://<domain>/api/stripe/webhook` in live
+  mode with the eight events above; store its signing secret as
+  `STRIPE_WEBHOOK_SECRET` (and a separate test-mode endpoint and secret for
+  previews if they take test payments).
+- Set `CRON_SECRET` in Vercel; on a Pro plan tighten the cron to every 15
+  minutes.
+- If a restricted key is used, grant it the reads listed above.
+- Decide who monitors `PAYMENT_NEEDS_ATTENTION` entries until the admin order
+  view (Milestone 12) shows them.

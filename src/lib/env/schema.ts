@@ -48,6 +48,18 @@ const rawServerEnvSchema = z.object({
   BLOB_READ_WRITE_TOKEN: optionalNonEmpty(z.string()),
   STORAGE_LOCAL_DIR: optionalNonEmpty(z.string()),
   PAYMENT_GATEWAY: optionalNonEmpty(z.enum(["stripe", "fake"])),
+  FAKE_STRIPE_STATE_DIR: optionalNonEmpty(z.string()),
+  STRIPE_WEBHOOK_SECRET: optionalNonEmpty(
+    z
+      .string()
+      .regex(
+        /^whsec_[A-Za-z0-9_]+$/,
+        "must be a Stripe webhook signing secret",
+      ),
+  ),
+  CRON_SECRET: optionalNonEmpty(
+    z.string().min(16, "must be at least 16 characters"),
+  ),
   STRIPE_SECRET_KEY: optionalNonEmpty(
     z
       .string()
@@ -95,10 +107,18 @@ export const DEFAULT_LOCAL_STORAGE_DIR = ".storage";
  *   and live credentials are never mixed.
  * - `fake`: an in-process stand-in that never contacts Stripe and returns
  *   checkout.stripe.com-shaped URLs. For local E2E runs only; refused on
- *   Vercel.
+ *   Vercel. With FAKE_STRIPE_STATE_DIR its sessions are JSON files the E2E
+ *   tests can edit to play Stripe.
+ *
+ * `webhookSecret` (STRIPE_WEBHOOK_SECRET) verifies Stripe webhook signatures;
+ * without it the webhook endpoint answers 503 so Stripe retries later. It is
+ * required in Vercel production.
  */
 export type PaymentConfig = Readonly<
-  { gateway: "stripe"; secretKey: string | null } | { gateway: "fake" }
+  (
+    | { gateway: "stripe"; secretKey: string | null }
+    | { gateway: "fake"; stateDir: string | null }
+  ) & { webhookSecret: string | null }
 >;
 
 const PLACEHOLDER_SENDER = "HeavyCards <no-reply@heavycards.invalid>";
@@ -115,6 +135,11 @@ export type ServerEnv = Readonly<{
   email: EmailConfig;
   storage: StorageConfig;
   payments: PaymentConfig;
+  /**
+   * Bearer secret Vercel Cron sends to scheduled routes (CRON_SECRET).
+   * Required in Vercel production; without it the routes refuse every call.
+   */
+  cronSecret: string | null;
 }>;
 
 export class EnvValidationError extends Error {
@@ -229,11 +254,26 @@ function resolvePayments(
   env: z.infer<typeof rawServerEnvSchema>,
 ): PaymentConfig | Error {
   const gateway = env.PAYMENT_GATEWAY ?? "stripe";
+  const webhookSecret = env.STRIPE_WEBHOOK_SECRET ?? null;
+  if (env.VERCEL_ENV === "production" && !webhookSecret) {
+    return new Error(
+      "STRIPE_WEBHOOK_SECRET: required in the Vercel production environment",
+    );
+  }
   if (gateway === "fake") {
     if (env.VERCEL_ENV) {
       return new Error("PAYMENT_GATEWAY: fake is for local test runs only");
     }
-    return { gateway };
+    return {
+      gateway,
+      stateDir: env.FAKE_STRIPE_STATE_DIR ?? null,
+      webhookSecret,
+    };
+  }
+  if (env.FAKE_STRIPE_STATE_DIR) {
+    return new Error(
+      "FAKE_STRIPE_STATE_DIR: only used with PAYMENT_GATEWAY=fake",
+    );
   }
 
   const key = env.STRIPE_SECRET_KEY ?? null;
@@ -249,7 +289,7 @@ function resolvePayments(
       "STRIPE_SECRET_KEY: live keys are only allowed in the Vercel production environment; use a test key",
     );
   }
-  return { gateway, secretKey: key };
+  return { gateway, secretKey: key, webhookSecret };
 }
 
 /**
@@ -272,14 +312,21 @@ export function parseServerEnv(
   const email = resolveEmail(result.data);
   const storage = resolveStorage(result.data);
   const payments = resolvePayments(result.data);
-  const errors = [siteUrl, email, storage, payments].filter(
+  const cron =
+    result.data.VERCEL_ENV === "production" && !result.data.CRON_SECRET
+      ? new Error(
+          "CRON_SECRET: required in the Vercel production environment (checkout reconciliation)",
+        )
+      : null;
+  const errors = [siteUrl, email, storage, payments, cron].filter(
     (value) => value instanceof Error,
   );
   if (
     siteUrl instanceof Error ||
     email instanceof Error ||
     storage instanceof Error ||
-    payments instanceof Error
+    payments instanceof Error ||
+    cron
   ) {
     throw new EnvValidationError(errors.map((error) => error.message));
   }
@@ -293,5 +340,6 @@ export function parseServerEnv(
     email: Object.freeze(email),
     storage: Object.freeze(storage),
     payments: Object.freeze(payments),
+    cronSecret: result.data.CRON_SECRET ?? null,
   });
 }

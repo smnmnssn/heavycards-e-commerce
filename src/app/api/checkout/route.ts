@@ -5,6 +5,8 @@ import { env } from "@/lib/env/server";
 import { releaseExpiredReservations } from "@/server/checkout/cleanup";
 import { handleCheckoutRequest } from "@/server/checkout/handle-request";
 import { getCheckoutGateway } from "@/server/checkout/server";
+import { reconcileCheckouts } from "@/server/payments/reconcile";
+import { revalidateAfterInventoryChange } from "@/server/payments/revalidate";
 import { pruneRateLimits } from "@/server/security/rate-limit";
 
 /**
@@ -13,12 +15,19 @@ import { pruneRateLimits } from "@/server/security/rate-limit";
  * payment URL. See src/server/checkout/create-checkout.ts.
  */
 export async function POST(request: Request): Promise<Response> {
+  const gateway = getCheckoutGateway();
   // Housekeeping after the response: never delays or fails the checkout.
+  // Besides the scheduled run, a few overdue checkouts are reconciled here,
+  // so stock whose Stripe outcome was missed is freed while customers shop.
   after(async () => {
     const now = new Date();
     try {
       await releaseExpiredReservations(db, now);
       await pruneRateLimits(db, now);
+      if (gateway) {
+        const summary = await reconcileCheckouts({ db, gateway }, { limit: 3 });
+        revalidateAfterInventoryChange(summary.productSlugs);
+      }
     } catch (error) {
       console.error("[checkout] reservation cleanup failed", {
         error: error instanceof Error ? error.name : "unknown",
@@ -28,7 +37,7 @@ export async function POST(request: Request): Promise<Response> {
 
   return handleCheckoutRequest(request, {
     db,
-    gateway: getCheckoutGateway(),
+    gateway,
     siteUrl: env.siteUrl,
     secret: env.authSecret,
   });
