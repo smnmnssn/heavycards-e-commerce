@@ -13,6 +13,7 @@ if (!process.env.DATABASE_URL && existsSync(".env.local")) {
 
 const isCI = Boolean(process.env.CI);
 const CATALOG_ADMIN_SPEC = /admin-catalog\.spec\.ts$/;
+const CHECKOUT_SPEC = /checkout\.spec\.ts$/;
 const port = Number(process.env.E2E_PORT ?? 3100);
 const baseURL = `http://localhost:${port}`;
 
@@ -40,12 +41,12 @@ export default defineConfig({
     {
       name: "desktop-chromium",
       use: { ...devices["Desktop Chrome"] },
-      testIgnore: CATALOG_ADMIN_SPEC,
+      testIgnore: [CATALOG_ADMIN_SPEC, CHECKOUT_SPEC],
     },
     {
       name: "mobile-chromium",
       use: { ...devices["Pixel 7"] },
-      testIgnore: CATALOG_ADMIN_SPEC,
+      testIgnore: [CATALOG_ADMIN_SPEC, CHECKOUT_SPEC],
     },
     // Catalog administration publishes and edits products, which would change
     // the listings the storefront tests count on. It therefore runs after
@@ -57,6 +58,16 @@ export default defineConfig({
       testMatch: CATALOG_ADMIN_SPEC,
       dependencies: ["desktop-chromium", "mobile-chromium"],
       // In order, in one worker: the spec cleans up its data in beforeAll.
+      fullyParallel: false,
+    },
+    // Checkout creates products, pending orders and reservations. It runs
+    // last, on its own products, and removes them again; its phone-sized
+    // tests set their own device.
+    {
+      name: "checkout",
+      use: { ...devices["Desktop Chrome"] },
+      testMatch: CHECKOUT_SPEC,
+      dependencies: ["catalog-admin"],
       fullyParallel: false,
     },
   ],
@@ -73,6 +84,9 @@ export default defineConfig({
       // Uploaded product images go to a local, git-ignored directory.
       STORAGE_PROVIDER: "local",
       STORAGE_LOCAL_DIR: E2E_STORAGE_DIR,
+      // Checkout never contacts Stripe in E2E: the in-process fake returns
+      // checkout.stripe.com URLs, which the tests intercept.
+      PAYMENT_GATEWAY: "fake",
     },
   },
 });

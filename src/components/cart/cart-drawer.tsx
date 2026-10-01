@@ -30,11 +30,13 @@ export const CART_DRAWER_ID = "kundvagn";
  * explicit "Visa kundvagnen" action), never after adding a product.
  *
  * Prices and the subtotal are a display estimate from current server data;
- * checkout (Milestone 8) recalculates everything authoritatively.
+ * "Till kassan" sends the cart to the server, which recalculates everything
+ * and either redirects to Stripe or explains (in Swedish) what changed.
  */
 export function CartDrawer() {
   const store = useCartStore();
-  const { cart, products, hydration, adjustments, isOpen } = useCartState();
+  const { cart, products, hydration, adjustments, isOpen, checkout } =
+    useCartState();
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
@@ -50,6 +52,9 @@ export function CartDrawer() {
   );
   const count = totalQuantity(cart);
   const empty = cart.lines.length === 0;
+  const busy =
+    checkout.status === "submitting" || checkout.status === "redirecting";
+  const canCheckout = !evaluated.incomplete && !evaluated.hasIssues;
 
   return (
     <dialog
@@ -156,26 +161,47 @@ export function CartDrawer() {
               <p className="text-xs text-muted-foreground">
                 Priser inklusive moms. Slutligt pris bekräftas i kassan.
               </p>
-              {/* Checkout arrives in Milestone 8; until then the action is
-                  honestly unavailable rather than pretending to work. */}
+              {checkout.status === "error" && (
+                <div
+                  role="alert"
+                  data-testid="checkout-error"
+                  className="border-l-2 border-destructive pl-3 text-sm"
+                >
+                  <p className="font-semibold">{checkout.message.title}</p>
+                  {checkout.message.details.length > 0 && (
+                    <ul className="mt-1.5 list-disc space-y-1 pl-4">
+                      {checkout.message.details.map((detail) => (
+                        <li key={detail}>{detail}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
               <button
                 type="button"
-                disabled
+                disabled={!canCheckout || busy}
+                aria-busy={busy}
                 aria-describedby={`${CART_DRAWER_ID}-kassa`}
+                onClick={() => void store.checkout()}
                 className={cn(
                   buttonClasses({ size: "lg", fullWidth: true }),
                   "disabled:opacity-40",
+                  busy && "disabled:opacity-70",
                 )}
               >
-                Till kassan
+                {checkout.status === "submitting"
+                  ? "Startar betalningen…"
+                  : checkout.status === "redirecting"
+                    ? "Skickar dig till betalningen…"
+                    : "Till kassan"}
               </button>
               <p
                 id={`${CART_DRAWER_ID}-kassa`}
                 className="text-center text-sm text-muted-foreground"
               >
                 {evaluated.hasIssues
-                  ? "Åtgärda markerade produkter. Kassan öppnar snart."
-                  : "Kassan öppnar snart."}
+                  ? "Åtgärda markerade produkter för att gå till kassan."
+                  : "Du betalar säkert via Stripe. Frakt och totalbelopp visas där innan du betalar."}
               </p>
             </footer>
           </>

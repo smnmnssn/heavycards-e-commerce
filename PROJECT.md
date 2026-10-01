@@ -644,13 +644,14 @@ The customer should be able to provide the required shipping/customer informatio
 Typical required information:
 
 - email
-- first name
-- last name
+- full name
 - shipping address
 - postal code
 - city
 - Sweden
 - phone number when required
+
+Stripe Checkout collects the customer's full name as one value. HeavyCards stores it as a single `customerName` field and must not split names heuristically (for example by spaces) into first and last names.
 
 ---
 
@@ -761,8 +762,7 @@ Conceptual Order model:
 - id
 - orderNumber
 - email
-- firstName
-- lastName
+- customerName
 - phone
 - addressLine1
 - addressLine2
@@ -785,6 +785,10 @@ Conceptual Order model:
 - shippingEmailSentAt
 - createdAt
 - updatedAt
+
+`customerName` is the customer's full name exactly as collected by Stripe Checkout. It is never split into separate first and last names.
+
+Pending orders may have customer identity and address fields unset, because Stripe Checkout collects them. Once an order is paid (or later refunded), it must have `customerName` and the other authoritative fulfillment fields: email, shipping address (address line 1, postal code, city) and the payment time.
 
 Do not expose the database ID as the customer-facing order number.
 

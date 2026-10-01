@@ -125,6 +125,13 @@ describe("development seed", () => {
         0,
       );
       expect(order.subtotalAmount).toBe(itemsTotal);
+      // Paid orders carry the single full name Stripe collects; checkouts
+      // that never completed carry none.
+      if (order.paidAt) {
+        expect(order.customerName).toMatch(/^\S+ \S+$/);
+      } else {
+        expect(order.customerName).toBeNull();
+      }
     }
   });
 

@@ -106,9 +106,7 @@ export async function lockRow(
   return rows.length > 0;
 }
 
-export const isUniqueViolation = (error: unknown) =>
-  error instanceof Prisma.PrismaClientKnownRequestError &&
-  error.code === "P2002";
+export { isUniqueViolation } from "@/server/db/transactions";
 
 export const isForeignKeyViolation = (error: unknown) =>
   error instanceof Prisma.PrismaClientKnownRequestError &&

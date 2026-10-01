@@ -4,9 +4,11 @@ PostgreSQL via Prisma ORM 7. The source of truth is
 [prisma/schema.prisma](../prisma/schema.prisma). Invariants Prisma cannot express
 (CHECK constraints, the order-number sequence start) live at the end of each
 migration:
-[20260930205053_init](../prisma/migrations/20260930205053_init/migration.sql) and
+[20260930205053_init](../prisma/migrations/20260930205053_init/migration.sql),
 [20261001090000_admin_auth](../prisma/migrations/20261001090000_admin_auth/migration.sql)
-(Milestone 6).
+(Milestone 6) and
+[20261001120000_checkout_reservations](../prisma/migrations/20261001120000_checkout_reservations/migration.sql)
+(Milestone 8).
 
 This document explains the decisions behind the schema. Keep it in sync when
 the schema changes.
@@ -44,6 +46,7 @@ the schema changes.
 | `AuthRateLimit`        | `auth_rate_limits`       | Shared rate-limit counters for the auth endpoints.                    |
 | `AdminInvitation`      | `admin_invitations`      | Hashed, expiring, single-use invitations for new administrators.      |
 | `AuditLog`             | `audit_logs`             | Append-only record of important admin/system actions.                 |
+| `RateLimitBucket`      | `rate_limit_buckets`     | Fixed-window request counters (checkout creation).                    |
 | `Redirect`             | `redirects`              | Permanent redirects for changed public URLs.                          |
 | `StoreSettings`        | `store_settings`         | Single-row commercial configuration (no secrets).                     |
 
@@ -158,9 +161,30 @@ certificationNumber }`). Adding them is purely additive: orders, inventory,
 - `paidAt` and `refundedAmount` also extend the spec's model. Revenue
   reporting needs the payment time (not the checkout start) and the refunded
   amount, so that PARTIALLY_REFUNDED revenue can be computed net.
+- `EXPIRED` is also used when a checkout never became payable (Stripe
+  session creation failed) or was superseded by the same browser's newer
+  attempt after its Stripe session was expired (Milestone 8).
+- **Customer name.** `customerName` holds the full name exactly as Stripe
+  Checkout collects it (one value, up to 200 characters). It is never split
+  into first and last name. Milestone 8 replaced the earlier
+  `first_name`/`last_name` columns: the migration copied existing names into
+  `customer_name` as "First Last" (trimmed; a single part on its own; NULL
+  when both were empty) before dropping them. A CHECK forbids a blank name.
 - Customer and shipping fields are nullable because Stripe Checkout collects
-  them. A CHECK constraint requires `paidAt`, email, name and address as soon
-  as an order is PAID, PARTIALLY_REFUNDED or REFUNDED.
+  them: pending, expired and failed orders may lack them. A CHECK constraint
+  (`orders_paid_details_check`) requires `paidAt`, `email`, `customerName`,
+  `addressLine1`, `postalCode` and `city` as soon as an order is PAID,
+  PARTIALLY_REFUNDED or REFUNDED. Milestone 9 fills them from the verified,
+  completed Checkout Session before marking the order paid. `phone` and
+  `addressLine2` stay optional.
+- **Checkout fields.** `checkoutAttemptId` (unique UUID) is the idempotency
+  key of the browser's checkout attempt that created the order; it is a
+  random value known only to that browser and never shown elsewhere.
+  `checkoutExpiresAt` is when the Stripe Checkout Session stops accepting
+  payment (chosen by the server, whole seconds, sent to Stripe as
+  `expires_at`). `shippingCarrier` is set to the default carrier when the
+  order is created. Seeded and historical orders may have both checkout
+  fields NULL.
 - `country` is fixed to `SE` by a CHECK constraint (Sweden only in V1).
 - Fulfillment transitions are defined in `src/server/domain/fulfillment.ts`:
   NEW → PROCESSING → SHIPPED → COMPLETED, plus NEW/PROCESSING → CANCELLED.
@@ -203,22 +227,35 @@ availableToSell = stockOnHand − Σ quantity of reservations that are ACTIVE an
 - The rule is implemented once in `src/server/domain/inventory.ts` and unit tested.
 - One reservation per product per order (unique `(order_id, product_id)`);
   quantity must be > 0.
-- **Planned concurrency strategy (Milestone 8):** in one transaction,
-  1. lock the affected product rows with `SELECT … FOR UPDATE`, ordered by id
-     to avoid deadlocks;
-  2. compute available-to-sell in SQL using the rule above;
-  3. reject if insufficient, otherwise insert the reservations and the pending
-     order, then commit.
+- **Concurrency strategy (implemented in Milestone 8,
+  `src/server/checkout/create-checkout.ts`):** in one READ COMMITTED
+  transaction,
+  1. lock the requested product rows with `SELECT … FOR UPDATE`, ordered by
+     id so concurrent checkouts never deadlock (`lock_timeout` 5 s);
+  2. read available-to-sell using the rule above (a new statement, so it sees
+     every reservation committed before the lock was granted);
+  3. reject if insufficient, otherwise insert the pending order, its items
+     and its reservations, then commit.
 
-  Two concurrent checkouts for the last unit serialize on the product row lock,
-  so the second one sees the first reservation. Never "read stock → wait →
-  blindly update".
+  Two concurrent checkouts for the last unit serialize on the product row
+  lock, so the second one sees the first reservation. Deadlocks and
+  serialization failures are retried. Never "read stock → wait → blindly
+  update". Details: docs/architecture.md → Milestone 8.
 
-- **Expiry alignment:** a reservation must not expire before the Stripe
-  Checkout session can still accept payment. Otherwise a late payment could
-  consume stock that was already sold to someone else. Milestone 8 sets
-  `expiresAt` ≥ the session's `expires_at`, and extends the hold for
-  asynchronous payment methods until Stripe reports success or failure.
+- **Expiry alignment:** a reservation must not expire while the Stripe
+  Checkout session can still accept payment, or a late payment could consume
+  stock already sold to someone else. Reservations are first created with a
+  5-minute provisional hold. Only once the Stripe session exists and is
+  attached to the order are they extended to the session's `expires_at`
+  (stored as `orders.checkout_expires_at`, 40 minutes after checkout start)
+  plus 15 minutes of grace, and only then does the customer receive the
+  payment URL. Milestone 9 extends the hold for asynchronous payment methods
+  until Stripe reports success or failure.
+- **Release:** a failed Stripe call, a superseding attempt from the same
+  browser (after its Stripe session was expired) or Milestone 9's expiry
+  handling sets the reservations to RELEASED and the order to EXPIRED.
+  `releaseExpiredReservations` tidies expired ACTIVE rows after checkout
+  requests; availability never depends on it.
 - Refunds never restock automatically (PROJECT.md §35). Restocking is an
   explicit admin action that increments `stockOnHand` and writes an audit log.
 
@@ -327,6 +364,16 @@ UPDATE`) before checking that another active OWNER remains, so concurrent
   values are business decisions. Production must create the row before
   checkout is enabled (launch checklist, Milestone 15). The development seed
   creates it with placeholder values.
+
+## Rate limits
+
+`rate_limit_buckets` holds fixed-window counters for public endpoints that
+need abuse protection; today only checkout creation (15 requests per client
+per 10 minutes). The primary key is `(key, window_start)`; one atomic
+`INSERT … ON CONFLICT DO UPDATE … RETURNING count` per request. `key` is
+`<scope>:<HMAC-SHA-256 of the client IP>` (keyed with `AUTH_SECRET`), so no
+raw IP address is stored. Windows older than a day are deleted after checkout
+requests. Better Auth's own counters stay in `auth_rate_limits`.
 
 ## Redirects
 

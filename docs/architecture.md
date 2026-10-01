@@ -906,3 +906,334 @@ and the upload route) now calls `revalidateCatalog()`:
 - **Audit log viewing** in admin is not built yet (entries are written).
 - Deleting a category or set redirects its URL to `/pokemon-tcg`; the owner
   may prefer another target in specific cases.
+
+## Milestone 8 — Checkout and inventory reservation (2026-10-01)
+
+Schema changes are in [database.md](database.md); routes in
+[routes.md](routes.md). Payment completion (webhooks, PAID, stock decrement,
+emails, clearing the cart) is Milestone 9 and is not implemented here.
+
+### Layers
+
+| Layer                                                                   | Module                                                                |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Request/response contract, Swedish failure messages, Stripe URL check   | `src/lib/checkout/checkout.ts` (isomorphic)                           |
+| Pricing, shipping, VAT, issue detection, reservation timing             | `src/server/domain/checkout.ts` (pure)                                |
+| Checkout service: reserve → Stripe → attach, idempotency, release       | `src/server/checkout/create-checkout.ts`                              |
+| HTTP handling: origin, rate limit, body limit, validation, status codes | `src/server/checkout/handle-request.ts`                               |
+| Payment gateway interface, Stripe implementation, fake, selection       | `src/server/checkout/{gateway,stripe-gateway,fake-gateway,server}.ts` |
+| Stale-reservation cleanup                                               | `src/server/checkout/cleanup.ts`                                      |
+| Transaction retry and PostgreSQL error classification                   | `src/server/db/transactions.ts`                                       |
+| Rate limiting (PostgreSQL fixed window)                                 | `src/server/security/rate-limit.ts`                                   |
+| Route handler (thin)                                                    | `src/app/api/checkout/route.ts`                                       |
+| Browser: checkout action, attempt storage, error state                  | `src/components/cart/cart-store.ts`, `cart-drawer.tsx`                |
+| Return pages                                                            | `src/app/(store)/kassa/{bekraftelse,avbruten}`                        |
+
+`POST /api/checkout` is a route handler rather than a server action because
+it needs a bounded body read, explicit status codes with `Retry-After`, and a
+rate limit that runs before any parsing.
+
+### Dependency
+
+`stripe` **23.0.0**, the latest stable release (published 2026-10-01). It
+pins API version `2026-09-30.endive`, which the gateway also passes
+explicitly; the typed option only accepts the SDK's own version, so an SDK
+upgrade fails type checking until the API version is reviewed. The 23.0
+breaking changes were checked against our use: Node ≥ 20 (we use 24);
+`payment_method_types` removed from Checkout Session creation (we rely on
+dynamic payment methods anyway); webhook signature verification now applies
+the default tolerance (relevant for Milestone 9). `npm audit` is unchanged
+(only the 4 known Prisma CLI findings). No other package was added.
+
+### Checkout request
+
+The browser sends only:
+
+```json
+{
+  "attemptId": "<uuid>",
+  "previousAttemptId": "<uuid, optional>",
+  "lines": [
+    {
+      "productId": "<uuid>",
+      "quantity": 2,
+      "expectedUnitPriceAmount": 219900
+    }
+  ]
+}
+```
+
+The schema is strict: totals, shipping amounts or any other field are refused
+(400). `expectedUnitPriceAmount` is the price the drawer displayed. It is
+never charged; the server compares it with the current price and refuses the
+checkout if they differ (see "Browser UX").
+
+### Authoritative validation
+
+Inside the reservation transaction, after locking the product rows, the
+server reloads every product with `loadCheckoutProducts` (the Milestone 5
+loader plus the SKU) and runs `evaluateCheckout`, which reuses the
+Milestone 5 `evaluateCart` rules:
+
+- the product exists and has a public page (draft, unpublished or unknown →
+  `not_found`);
+- it is purchasable now: ARCHIVED → `discontinued`, COMING_SOON without
+  preorder → `coming_soon`, nothing available → `sold_out` /
+  `preorder_sold_out`;
+- quantity ≤ available-to-sell (`stockOnHand − active, unexpired
+reservations`), otherwise `insufficient_quantity` with the available amount;
+- the current price equals the displayed price, otherwise `price_changed`;
+- one shipment: stock and preorders never mix; preorders only with one
+  identical, known release date; `isPreorder` decides even after the release
+  date has passed.
+
+Totals come from the database only: line totals (`multiplyAmount`), subtotal,
+flat or free shipping from `StoreSettings` (inclusive threshold,
+`calculateShippingAmount`), total, and the VAT contained in the total
+(`vatPortionOfGross` with `StoreSettings.vatRateBasisPoints`; shipping carries
+the goods' rate). Missing store settings → "payment unavailable".
+
+### Inventory locking strategy
+
+One interactive transaction at PostgreSQL's default READ COMMITTED level:
+
+1. `SET LOCAL lock_timeout = '5s'`;
+2. `SELECT id FROM products WHERE id = ANY($ids) ORDER BY id FOR UPDATE`;
+3. read the products and their active reservations, validate, price;
+4. insert the order, its items and its reservations; commit.
+
+A concurrent checkout for any of the same products blocks at step 2 until
+the first one commits. Its step 3 is a new statement, so under READ COMMITTED
+it sees the first transaction's committed reservations: the last unit can be
+reserved only once. Locking in id order means two checkouts never wait on
+each other in a cycle. Admin stock edits (and Milestone 9's payment
+processing) update the product row as well, so they serialise with checkout.
+
+SERIALIZABLE was not chosen: the row locks give the same guarantee here with
+fewer aborted transactions. Deadlocks (`40P01`) and serialization failures
+(`40001`, Prisma P2034) are still retried up to three times with jittered
+backoff (`withTransactionRetry`); a lock timeout (`55P03`) answers 503
+("busy"). With the pg adapter these errors arrive as Prisma P2010 with the
+SQLSTATE in `meta.driverAdapterError.cause.originalCode` (verified
+experimentally).
+
+DB tests prove that 12 simultaneous checkouts for 1 unit create exactly one
+order, that 15 simultaneous multi-unit checkouts never exceed stock, and that
+carts listing the same products in opposite order do not deadlock.
+
+### Reservation lifecycle and expiry
+
+| Phase                    | What happens                                                                                                        | Reservation `expiresAt`                 |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| 1. reserve (transaction) | PENDING order, item snapshots, ACTIVE reservations; `checkoutExpiresAt` = now + 40 min, whole seconds               | now + **5 min** (provisional)           |
+| 2. Stripe                | Checkout Session created with `expires_at = checkoutExpiresAt`                                                      | unchanged                               |
+| 3. attach (transaction)  | order row locked; if still PENDING and every reservation still holds: store the session ID, extend the reservations | session `expires_at` + **15 min** grace |
+
+- **Stripe expiry (verified against the API reference on 2026-10-01):**
+  `expires_at` may be 30 minutes to 24 hours after creation (default 24
+  hours). 40 minutes stays above the minimum even when the session is created
+  at the end of the provisional window (an idempotent retry), and keeps
+  abandoned checkouts from holding stock for long. The value is stored on the
+  order (`checkoutExpiresAt`).
+- **A reservation never expires while Stripe can accept payment:** it holds
+  until the session's expiry plus 15 minutes, which also covers a payment
+  completed at the last second whose webhook arrives later.
+- **The payment URL is returned only after phase 3 has committed**, so nobody
+  can pay a session whose stock is not reserved. If attaching fails (the
+  order was released meanwhile), the session is expired at Stripe and the
+  browser starts a new attempt.
+- **Crashes:** a crash after phase 1 or 2 leaves only the 5-minute
+  provisional hold, and the session URL never reached the customer. Nothing
+  can hold stock permanently, because availability ignores expired
+  reservations whatever their stored status.
+- **Stripe failure:** the request that created the order releases it
+  (reservations RELEASED, order EXPIRED) in a transaction that requires that
+  no session is attached, so it can never undo a concurrent successful
+  attach. A repeated request that fails releases nothing.
+- **Cleanup safety net:** after every checkout request (`after()`),
+  `releaseExpiredReservations` marks up to 200 expired ACTIVE reservations
+  RELEASED (`FOR UPDATE SKIP LOCKED`) and old rate-limit windows are deleted.
+  Correctness never depends on it; a scheduled job can call the same function
+  later.
+- **Milestone 9 must:** handle `checkout.session.expired`; extend the hold
+  when a session completes with an asynchronous (delayed) payment; and decide
+  what happens when a completion arrives after a hold lapsed.
+- `stockOnHand` is never changed in Milestone 8.
+
+### Idempotency
+
+- **Attempt ID.** The browser generates a random UUID per checkout attempt
+  and stores it (`localStorage["heavycards:checkout-attempt"]`, with a
+  fingerprint of the lines and displayed prices) **before** sending, so a
+  lost response, a double click or a return from Stripe repeats the same
+  attempt. Blocked storage falls back to memory. `orders.checkout_attempt_id`
+  is unique; two simultaneous submissions of one new attempt resolve to one
+  order (the second re-reads after the lock wait or the unique violation).
+- **Reuse rules.** A repeated attempt reuses its order only if its lines,
+  quantities and displayed prices are identical, the order is PENDING, every
+  reservation still holds, and at least 5 minutes of the session remain.
+  Otherwise the server answers `attempt_closed` and the browser retries once
+  with a new attempt ID.
+- **Stripe idempotency key** `heavycards-checkout-<order id>`. The session
+  parameters are derived deterministically from the stored order (items in a
+  stable order, the stored expiry), so a retry returns the same session and
+  URL. The Stripe client also retries network errors (2 retries, 20 s timeout)
+  with the same key.
+- **Superseding.** When the cart has changed, the browser sends its previous
+  attempt ID. The server first expires that attempt's Stripe session (so it
+  can no longer be paid), then releases its reservations and marks the order
+  EXPIRED. A session the customer already completed is left alone for payment
+  processing. The attempt ID is a 122-bit random value known only to that
+  browser, so it is a sufficient capability; the public order number is never
+  used for anything.
+- **The customer's own hold in the cart.** `/api/cart` accepts the current
+  attempt ID and does not count that attempt's reservations, so a customer
+  back from Stripe who changes the cart does not see their own hold as "sold
+  out" (found by E2E). Checkout always counts every reservation under the row
+  locks, after releasing the previous attempt. Product pages (ISR, 60 s)
+  still count it.
+
+### Stripe Checkout configuration
+
+`buildCheckoutSessionParams` (unit-tested, deterministic):
+
+- `mode: payment`, `ui_mode: hosted_page`, `currency: sek`, `locale: sv`,
+  `submit_type: pay`;
+- line items from the order's snapshots (`price_data` with name and unit
+  amount);
+- one fixed shipping rate with the order's shipping amount, labelled
+  "PostNord" or "Fri frakt (PostNord)" (from
+  `StoreSettings.defaultShippingCarrier`, stored on the order);
+- `shipping_address_collection.allowed_countries: ["SE"]`, so no other
+  country can be chosen; `phone_number_collection` enabled (PostNord delivery
+  notifications); billing address `auto`; `customer_creation: if_required`
+  (guest checkout);
+- **no `payment_method_types`:** Stripe's dynamic payment methods offer what
+  is enabled in the Dashboard and eligible for the session (cards, Swish,
+  Klarna);
+- `client_reference_id`, `metadata` and `payment_intent_data.metadata` carry
+  only `order_id` and `order_number`, never personal data;
+- `success_url = APP_URL/kassa/bekraftelse?session_id={CHECKOUT_SESSION_ID}`,
+  `cancel_url = APP_URL/kassa/avbruten`, built on the server from `APP_URL`
+  with fixed paths; the client cannot influence them.
+
+The full name Stripe collects with the shipping address is the customer's
+single full name (`Order.customerName`, stored in Milestone 9). After
+creation, the server checks `amount_total`, the currency and the URL against
+the order; a mismatch expires the session and releases the order.
+
+### Gateway abstraction and environments
+
+`CheckoutGateway` has two methods: create and expire. `StripeCheckoutGateway`
+is the only module that imports `stripe`. `FakeCheckoutGateway` keeps
+sessions in memory, honours idempotency keys and returns
+`checkout.stripe.com`-shaped URLs.
+
+- `PAYMENT_GATEWAY=stripe` (default) uses `STRIPE_SECRET_KEY`. Live keys are
+  refused outside Vercel production, and Vercel production requires a live
+  key. Without a key, checkout answers "payment unavailable" and the rest of
+  the store keeps working.
+- `PAYMENT_GATEWAY=fake` is for local E2E runs and is refused on any Vercel
+  deployment. DB tests inject the fake directly.
+
+### Browser UX
+
+- "Till kassan" is enabled when every line has current server data and the
+  cart has no issues. While starting it reads "Startar betalningen…", then
+  "Skickar dig till betalningen…" (`aria-busy`); repeated clicks are ignored.
+- The browser follows only `https://checkout.stripe.com` URLs
+  (`isStripeCheckoutUrl`), so a tampered response cannot redirect elsewhere.
+- **Rejected cart:** the drawer reloads current data (new prices,
+  unavailability, quantities lowered to what is left, with the Milestone 5
+  per-line notes) and shows a `role="alert"` block: "Kundvagnen har ändrats.
+  Kontrollera den och tryck på Till kassan igen.", followed by one Swedish
+  line per problem (sold out, not enough left, no longer sold, price changed
+  from X to Y, preorder conflict). Changing the cart clears the message.
+- **Price changes:** if a price changed after the customer saw it, nothing is
+  reserved or charged. The new price is shown and the customer must press
+  "Till kassan" again, accepting it knowingly.
+- Rate limiting has its own message; technical failures show "Det gick inte
+  att starta betalningen. Försök igen."
+- Starting checkout and the return pages never clear the cart; clearing after
+  a verified payment belongs to Milestone 9.
+- Returning with the back button (page cache) resets the button state.
+
+### Return pages
+
+- `/kassa/bekraftelse?session_id=…` shows only database state. PENDING →
+  "Tack! Vi kontrollerar din betalning." with the public order number and an
+  explanation that a confirmation follows by email. PAID/PARTIALLY_REFUNDED,
+  REFUNDED and EXPIRED/FAILED have their own texts (reachable only once
+  webhooks set those states). An unknown or malformed ID → "Vi hittade ingen
+  beställning". Opening the URL never changes anything.
+- `/kassa/avbruten`: "Betalningen avbröts", the cart is still there, with
+  "Visa kundvagnen" and "Fortsätt handla". Pressing "Till kassan" with the
+  same cart resumes the same Stripe session.
+- Both are `noindex, nofollow`; `/kassa/**` also sends `X-Robots-Tag` and
+  `Referrer-Policy: no-referrer`, because the session ID is in the URL.
+
+### Security
+
+- **CSRF:** `Origin` must equal `APP_URL` (403 otherwise), and the body must
+  be JSON (415). The endpoint uses no cookies.
+- **Abuse:** 15 checkout requests per client IP per 10 minutes (429 with
+  `Retry-After`), counted atomically in PostgreSQL (`rate_limit_buckets`,
+  shared by all instances). Only an HMAC of the IP (keyed with `AUTH_SECRET`)
+  is stored, and windows older than a day are deleted. Together with
+  superseding, one client can hold only a few short-lived reservations. A
+  distributed attacker could still hold stock for up to about 55 minutes per
+  reservation; stronger protection (bot checks, per-product caps) is a
+  Milestone 14 decision.
+- Body ≤ 16 KB, read with a hard limit; strict Zod schema (≤ 50 lines,
+  quantity 1–99, UUIDs, no duplicate products).
+- **Logging:** `[checkout]` logs contain only the error name, Stripe's error
+  type, code and request ID, and our order ID; never messages, keys, IP
+  addresses, customer addresses or tokens. A DB test asserts this.
+- Customer-facing errors never include provider or database details.
+
+### Testing
+
+- **Unit:** pricing, shipping threshold, VAT, issue detection, reservation
+  timing, attempt matching; the request schema (client totals refused), the
+  Stripe URL check and the Swedish messages; Stripe session parameters
+  (Sweden only, no payment-method list, no personal data in metadata,
+  determinism) and the Stripe gateway with a mocked SDK; return-page states;
+  transaction retry; environment rules; the cart store's checkout flow
+  (attempt reuse, superseding, blocked storage, rejections, open-redirect
+  guard, own-hold lookup).
+- **DB:** pending order creation with snapshots, totals and reservations;
+  shipping and threshold; every rejection reason; active vs expired vs
+  released reservations; preorder rules; the provisional hold; release on
+  Stripe failure and on an amount mismatch; abandoned reservations expiring
+  and cleanup; idempotent retries and simultaneous double submission;
+  superseding; attach after release; last-unit and multi-unit concurrency;
+  lock ordering; the own-hold cart lookup; the HTTP handler (CSRF, content
+  type, size, schema, 409/503/429, logging); the rate limiter; the
+  `customerName` constraints; a replay of the migration on pre-migration rows.
+- **E2E** (`checkout` project, fake gateway, the Stripe origin intercepted):
+  cart → Till kassan → Stripe URL with a pending order and unchanged stock;
+  the cancel page and resuming the same session; superseding the customer's
+  own hold; the success page not claiming payment; unknown session IDs;
+  reduced quantity, sold out, price change, preorder conflict (UI and a
+  crafted request), cross-site request; phone viewport; axe on the drawer
+  error state and the return pages.
+- The Milestone 4 "Nyheter" E2E test read the cards before the streamed
+  listing arrived and failed about one run in three, also on the Milestone 7
+  build (verified by building that commit). It now waits for the first card.
+
+### Known limits and production setup
+
+- **Stripe account (Milestone 15):** enable Cards, Swish and Klarna under
+  Settings → Payment methods (test mode first). Their eligibility depends on
+  the account and is not simulated. Set the live `STRIPE_SECRET_KEY` only in
+  Vercel production (a restricted key with write access to Checkout Sessions
+  is enough), and configure the business name and branding shown on the
+  hosted page.
+- Until Milestone 9, a completed test payment leaves the order PENDING and
+  its reservation lapses after the grace period; stock is not decremented.
+- Prisma 7's query interpreter runs nested reads in parallel inside a
+  transaction, so `pg` 8 prints a deprecation warning ("Calling client.query()
+  when the client is already executing a query") during DB tests. The queries
+  are queued correctly; re-check on Prisma upgrades.
+- Product pages are ISR (60 s), so a just-reserved last unit can still show
+  "I lager" there briefly; the drawer and checkout always use live data.

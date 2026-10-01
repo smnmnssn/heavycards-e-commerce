@@ -23,6 +23,7 @@ describe("parseServerEnv", () => {
         from: "HeavyCards <no-reply@heavycards.invalid>",
       },
       storage: { provider: "local", directory: ".storage" },
+      payments: { gateway: "stripe", secretKey: null },
     });
   });
 
@@ -189,6 +190,7 @@ describe("parseServerEnv: email", () => {
       VERCEL_ENV: "production",
       APP_URL: "https://heavycards.se",
       BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_test",
+      STRIPE_SECRET_KEY: "sk_live_unittest",
     };
     expect(() => parse(production)).toThrow(/RESEND_API_KEY and EMAIL_FROM/);
     expect(
@@ -278,6 +280,7 @@ describe("parseServerEnv: image storage", () => {
       EMAIL_TRANSPORT: "resend",
       RESEND_API_KEY: "re_test",
       EMAIL_FROM: "HeavyCards <a@b.se>",
+      STRIPE_SECRET_KEY: "sk_live_unittest",
     };
     expect(() => parse(production)).toThrow(/BLOB_READ_WRITE_TOKEN: required/);
     expect(
@@ -295,5 +298,78 @@ describe("parseServerEnv: image storage", () => {
         message: expect.not.stringContaining("vercel_blob_rw_secret"),
       }),
     );
+  });
+});
+
+describe("parseServerEnv: payments", () => {
+  const production = {
+    NODE_ENV: "production",
+    VERCEL_ENV: "production",
+    APP_URL: "https://heavycards.se",
+    EMAIL_TRANSPORT: "resend",
+    RESEND_API_KEY: "re_test",
+    EMAIL_FROM: "HeavyCards <a@b.se>",
+    BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_test",
+  };
+
+  it("uses Stripe by default and works without a key outside production", () => {
+    expect(parse().payments).toEqual({ gateway: "stripe", secretKey: null });
+    expect(parse({ STRIPE_SECRET_KEY: "sk_test_abc123" }).payments).toEqual({
+      gateway: "stripe",
+      secretKey: "sk_test_abc123",
+    });
+    expect(
+      parse({ STRIPE_SECRET_KEY: "rk_test_abc123" }).payments,
+    ).toMatchObject({ secretKey: "rk_test_abc123" });
+  });
+
+  it.each([
+    ["development", {}],
+    [
+      "preview",
+      {
+        NODE_ENV: "production",
+        VERCEL_ENV: "preview",
+        VERCEL_URL: "x.vercel.app",
+      },
+    ],
+  ])("refuses live keys in %s", (_label, overrides) => {
+    expect(() =>
+      parse({ ...overrides, STRIPE_SECRET_KEY: "sk_live_secret999" }),
+    ).toThrow(/live keys are only allowed in the Vercel production/);
+  });
+
+  it("requires a live key in Vercel production", () => {
+    expect(() => parse(production)).toThrow(/a live key is required/);
+    expect(() =>
+      parse({ ...production, STRIPE_SECRET_KEY: "sk_test_abc123" }),
+    ).toThrow(/a live key is required/);
+    expect(
+      parse({ ...production, STRIPE_SECRET_KEY: "sk_live_abc123" }).payments,
+    ).toEqual({ gateway: "stripe", secretKey: "sk_live_abc123" });
+  });
+
+  it("rejects malformed keys without echoing them", () => {
+    const call = () => parse({ STRIPE_SECRET_KEY: "pk_test_publishable1" });
+    expect(call).toThrow(/STRIPE_SECRET_KEY/);
+    expect(call).toThrow(
+      expect.objectContaining({
+        message: expect.not.stringContaining("pk_test_publishable1"),
+      }),
+    );
+  });
+
+  it("accepts the fake gateway only for local runs", () => {
+    expect(parse({ PAYMENT_GATEWAY: "fake" }).payments).toEqual({
+      gateway: "fake",
+    });
+    expect(() =>
+      parse({
+        PAYMENT_GATEWAY: "fake",
+        NODE_ENV: "production",
+        VERCEL_ENV: "preview",
+        VERCEL_URL: "x.vercel.app",
+      }),
+    ).toThrow(/PAYMENT_GATEWAY: fake is for local test runs only/);
   });
 });

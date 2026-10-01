@@ -366,6 +366,11 @@ test.describe("Nyheter and Kommande", () => {
     page,
   }) => {
     await page.goto("/nyheter");
+    // The listing streams in behind a loading skeleton; reading the cards
+    // before they arrive made this test flaky (also before Milestone 8).
+    await expect(
+      page.getByRole("main").getByRole("article").first(),
+    ).toBeVisible();
     const names = await cardNames(page);
 
     expect(names).toContain("Destined Rivals Booster Box");

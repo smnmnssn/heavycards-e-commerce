@@ -31,6 +31,20 @@ describe("POST /api/cart", () => {
     expect(loadCartProducts).toHaveBeenCalledWith({}, [ID], expect.any(Date));
   });
 
+  it("passes the browser's checkout attempt so its own hold is not counted", async () => {
+    loadCartProducts.mockResolvedValue([]);
+    const attemptId = "6f1c1f9e-3b7a-4c2e-9a51-1e0f2d3c4b5a";
+
+    await POST(request({ productIds: [ID], attemptId }));
+
+    expect(loadCartProducts).toHaveBeenCalledWith({}, [ID], expect.any(Date), {
+      ownAttemptId: attemptId,
+    });
+    expect(
+      (await POST(request({ productIds: [ID], attemptId: "x" }))).status,
+    ).toBe(400);
+  });
+
   it.each([
     ["malformed JSON", "{"],
     ["missing field", {}],

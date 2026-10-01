@@ -13,6 +13,9 @@ import {
 } from "@/server/domain/catalog";
 import { availableToSell } from "@/server/domain/inventory";
 
+/** The shared client or a transaction client. */
+type ProductReader = Pick<PrismaClient, "product">;
+
 /**
  * Current, server-authoritative data for the products in a browser cart:
  * price, availability, quantity limit and shipment group. One query for all
@@ -21,20 +24,46 @@ import { availableToSell } from "@/server/domain/inventory";
  * Products without a public page (unknown, draft, unpublished) return only
  * their ID and "not_found", so the endpoint reveals nothing about them.
  *
- * Milestone 8 reuses this inside the checkout transaction (with row locks)
- * as the authoritative source for prices and stock.
+ * `ownAttemptId` is the browser's current checkout attempt. Its own
+ * reservations are not counted against it: a customer back from Stripe who
+ * changes the cart must not see their own hold as "sold out". Starting the
+ * new checkout releases that attempt first (src/server/checkout), and
+ * checkout itself always counts every reservation under row locks.
  */
 export async function loadCartProducts(
-  client: PrismaClient,
+  client: ProductReader,
   productIds: readonly string[],
   now: Date,
+  options: { ownAttemptId?: string } = {},
 ): Promise<CartProductView[]> {
+  const rows = await loadCheckoutProducts(client, productIds, now, options);
+  return rows.map((row) => row.view);
+}
+
+export type CheckoutProductRow = {
+  view: CartProductView;
+  /** Null for products without a public page (never purchasable). */
+  sku: string | null;
+};
+
+/**
+ * The same data plus the SKU, for checkout. Checkout calls this inside its
+ * transaction after locking the product rows, so availability reflects every
+ * committed reservation (src/server/checkout/create-checkout.ts).
+ */
+export async function loadCheckoutProducts(
+  client: ProductReader,
+  productIds: readonly string[],
+  now: Date,
+  { ownAttemptId }: { ownAttemptId?: string } = {},
+): Promise<CheckoutProductRow[]> {
   const products = await client.product.findMany({
     where: { id: { in: [...productIds] } },
     select: {
       id: true,
       slug: true,
       name: true,
+      sku: true,
       status: true,
       isPreorder: true,
       releaseDate: true,
@@ -48,46 +77,64 @@ export async function loadCartProducts(
         select: { url: true, altText: true, width: true, height: true },
       },
       reservations: {
-        where: { status: "ACTIVE", expiresAt: { gt: now } },
+        where: {
+          status: "ACTIVE",
+          expiresAt: { gt: now },
+          ...(ownAttemptId && {
+            // `not` alone would also drop orders without an attempt (NULL).
+            OR: [
+              { order: { checkoutAttemptId: null } },
+              { order: { checkoutAttemptId: { not: ownAttemptId } } },
+            ],
+          }),
+        },
         select: { quantity: true, status: true, expiresAt: true },
       },
     },
   });
   const byId = new Map(products.map((product) => [product.id, product]));
 
-  return productIds.map((productId): CartProductView => {
+  return productIds.map((productId): CheckoutProductRow => {
     const product = byId.get(productId);
     if (!product || !hasPublicPage(product, now)) {
       return {
-        productId,
-        available: false,
-        unavailableReason: "not_found",
-        name: null,
-        slug: null,
-        setName: null,
-        image: null,
-        unitPriceAmount: null,
-        maxQuantity: 0,
-        shipment: null,
+        sku: null,
+        view: {
+          productId,
+          available: false,
+          unavailableReason: "not_found",
+          name: null,
+          slug: null,
+          setName: null,
+          image: null,
+          unitPriceAmount: null,
+          maxQuantity: 0,
+          shipment: null,
+        },
       };
     }
 
-    return toCartProductView({
-      productId,
-      name: product.name,
-      slug: product.slug,
-      setName: product.pokemonSet?.name ?? null,
-      status: product.status,
-      isPreorder: product.isPreorder,
-      releaseDate: product.releaseDate ? toIsoDate(product.releaseDate) : null,
-      priceAmount: product.priceAmount,
-      availableQuantity: availableToSell(
-        product.stockOnHand,
-        product.reservations,
-        now,
-      ),
-      image: product.images[0] ?? null,
-    });
+    return {
+      sku: product.sku,
+      view: toCartProductView({
+        productId,
+        name: product.name,
+        slug: product.slug,
+        setName: product.pokemonSet?.name ?? null,
+        status: product.status,
+        isPreorder: product.isPreorder,
+        releaseDate: product.releaseDate
+          ? toIsoDate(product.releaseDate)
+          : null,
+        priceAmount: product.priceAmount,
+        availableQuantity: availableToSell(
+          product.stockOnHand,
+          product.reservations,
+          now,
+        ),
+        image: product.images[0] ?? null,
+      }),
+    };
   });
 }
 

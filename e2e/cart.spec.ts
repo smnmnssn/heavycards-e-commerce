@@ -211,9 +211,7 @@ test.describe("cart drawer", () => {
     await expect(drawer(page)).toHaveCount(0);
   });
 
-  test("shows prices, subtotal and an honest checkout state", async ({
-    page,
-  }) => {
+  test("shows prices, subtotal and the checkout action", async ({ page }) => {
     await add(page, BOOSTER_BOX, 2);
     await cartButton(page).click();
     const cart = drawer(page);
@@ -222,10 +220,12 @@ test.describe("cart drawer", () => {
     await expect(cart).toContainText(/2\s199\skr/); // unit price
     await expect(cart).toContainText(/4\s398\skr/); // line total and subtotal
     await expect(cart).toContainText("Beräknas i kassan");
+    // Enabled; starting checkout is covered by checkout.spec.ts, which uses
+    // its own products so the seeded catalog never gains reservations.
     await expect(
       cart.getByRole("button", { name: "Till kassan" }),
-    ).toBeDisabled();
-    await expect(cart).toContainText("Kassan öppnar snart.");
+    ).toBeEnabled();
+    await expect(cart).toContainText("Du betalar säkert via Stripe.");
   });
 
   test("changes quantities and removes products", async ({ page }) => {
@@ -303,7 +303,9 @@ test.describe("cart drawer", () => {
     await expect(
       cart.getByRole("button", { name: "Till kassan" }),
     ).toBeDisabled();
-    await expect(cart).toContainText("Åtgärda markerade produkter.");
+    await expect(cart).toContainText(
+      "Åtgärda markerade produkter för att gå till kassan.",
+    );
     // Unavailable lines count until the customer removes them.
     await expect(badge(page)).toHaveText(String(available + 3));
   });

@@ -12,6 +12,10 @@ import {
 
 import { CART_STORAGE_KEY } from "@/lib/cart/cart";
 import type { CartProductView } from "@/lib/cart/evaluate";
+import type {
+  CheckoutRequest,
+  CheckoutResponse,
+} from "@/lib/checkout/checkout";
 
 import { CartDrawer } from "./cart-drawer";
 import { CartStore, type CartStoreState } from "./cart-store";
@@ -20,11 +24,12 @@ const CartContext = createContext<CartStore | null>(null);
 
 async function fetchCartProducts(
   productIds: string[],
+  attemptId?: string,
 ): Promise<CartProductView[]> {
   const response = await fetch("/api/cart", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ productIds }),
+    body: JSON.stringify({ productIds, attemptId }),
     cache: "no-store",
   });
   if (!response.ok) {
@@ -35,6 +40,27 @@ async function fetchCartProducts(
     throw new Error("Cart lookup returned an unexpected shape");
   }
   return data.products;
+}
+
+/**
+ * Starts checkout. Error responses carry a JSON body with a code; anything
+ * else (network failure, unexpected body) rejects and is shown as a generic
+ * error.
+ */
+async function startCheckout(
+  request: CheckoutRequest,
+): Promise<CheckoutResponse> {
+  const response = await fetch("/api/checkout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+    cache: "no-store",
+  });
+  const data = (await response.json()) as CheckoutResponse;
+  if (typeof data !== "object" || data === null || !("ok" in data)) {
+    throw new Error("Checkout returned an unexpected shape");
+  }
+  return data;
 }
 
 function browserStorage() {
@@ -56,6 +82,8 @@ export function CartProvider({ children }: { children: ReactNode }) {
       new CartStore({
         fetchProducts: fetchCartProducts,
         storage: typeof window === "undefined" ? null : browserStorage(),
+        startCheckout,
+        navigate: (url) => window.location.assign(url),
       }),
   );
   const pathname = usePathname();
@@ -65,8 +93,17 @@ export function CartProvider({ children }: { children: ReactNode }) {
     const onStorage = (event: StorageEvent) => {
       if (event.key === CART_STORAGE_KEY) store.applyExternal(event.newValue);
     };
+    // Coming back from Stripe with the back button may restore this page
+    // from the browser's page cache, still showing "redirecting".
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) store.resetCheckout();
+    };
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    window.addEventListener("pageshow", onPageShow);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pageshow", onPageShow);
+    };
   }, [store]);
 
   // Following a link (e.g. a product in the drawer) closes the drawer.

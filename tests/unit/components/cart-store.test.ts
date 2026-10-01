@@ -2,7 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CartStore, type CartStorage } from "@/components/cart/cart-store";
 import { CART_STORAGE_KEY, serializeCart } from "@/lib/cart/cart";
+import { formatPrice } from "@/lib/money";
 import type { CartProductView } from "@/lib/cart/evaluate";
+import type {
+  CheckoutRequest,
+  CheckoutResponse,
+} from "@/lib/checkout/checkout";
 
 const STOCK_A = "01999999-0000-7000-8000-00000000000a";
 const STOCK_B = "01999999-0000-7000-8000-00000000000b";
@@ -313,5 +318,288 @@ describe("CartStore", () => {
     expect(store.getSnapshot().cart.lines).toEqual([
       { productId: STOCK_B, quantity: 4 },
     ]);
+  });
+});
+
+describe("CartStore checkout", () => {
+  const URL_A = "https://checkout.stripe.com/c/pay/cs_test_a";
+  let ids = 0;
+  const newAttemptId = () =>
+    `00000000-0000-4000-8000-${String(++ids).padStart(12, "0")}`;
+
+  async function checkoutSetup(
+    responses: Array<CheckoutResponse | Error>,
+    serverViews: Record<string, CartProductView> = {
+      [STOCK_A]: view(STOCK_A),
+    },
+  ) {
+    const storage = new MemoryStorage();
+    const fetchProducts = vi.fn(async (list: string[]) =>
+      list.map((id) => serverViews[id] ?? view(id)),
+    );
+    const queue = [...responses];
+    const startCheckout = vi.fn(async (request: CheckoutRequest) => {
+      void request;
+      const next = queue.shift();
+      if (!next || next instanceof Error) throw next ?? new Error("none");
+      return next;
+    });
+    const navigate = vi.fn();
+    const store = new CartStore({
+      fetchProducts,
+      storage,
+      startCheckout,
+      navigate,
+      newAttemptId,
+    });
+    store.load();
+    await store.addItem(serverViews[STOCK_A] ?? view(STOCK_A), 2);
+    return { store, storage, startCheckout, navigate };
+  }
+
+  it("sends only intent and displayed prices, then leaves for Stripe without clearing the cart", async () => {
+    const { store, startCheckout, navigate } = await checkoutSetup([
+      { ok: true, url: URL_A },
+    ]);
+
+    await store.checkout();
+
+    expect(startCheckout).toHaveBeenCalledWith({
+      attemptId: expect.any(String),
+      previousAttemptId: undefined,
+      lines: [
+        { productId: STOCK_A, quantity: 2, expectedUnitPriceAmount: 10_000 },
+      ],
+    });
+    expect(navigate).toHaveBeenCalledWith(URL_A);
+    expect(store.getSnapshot().checkout.status).toBe("redirecting");
+    expect(store.getSnapshot().cart.lines).toEqual([
+      { productId: STOCK_A, quantity: 2 },
+    ]);
+  });
+
+  it("never follows a URL outside Stripe Checkout", async () => {
+    const { store, navigate } = await checkoutSetup([
+      { ok: true, url: "https://evil.example/pay" },
+    ]);
+
+    await store.checkout();
+
+    expect(navigate).not.toHaveBeenCalled();
+    expect(store.getSnapshot().checkout).toEqual({
+      status: "error",
+      message: {
+        title: "Det gick inte att starta betalningen. Försök igen.",
+        details: [],
+      },
+    });
+  });
+
+  it("reuses the attempt for the same cart and starts a new one, naming the old, when it changes", async () => {
+    const { store, startCheckout } = await checkoutSetup([
+      new Error("network"),
+      { ok: true, url: URL_A },
+      { ok: true, url: URL_A },
+    ]);
+
+    await store.checkout(); // response lost
+    await store.checkout(); // retried: same attempt
+    store.resetCheckout(); // back from Stripe
+    store.setQuantity(STOCK_A, 1);
+    await store.checkout(); // different cart: new attempt
+
+    const [first, second, third] = startCheckout.mock.calls.map(([r]) => r);
+    expect(second!.attemptId).toBe(first!.attemptId);
+    expect(third!.attemptId).not.toBe(first!.attemptId);
+    expect(third!.previousAttemptId).toBe(first!.attemptId);
+  });
+
+  it("keeps the attempt in memory when browser storage is blocked", async () => {
+    const startCheckout = vi.fn(
+      async (request: CheckoutRequest): Promise<CheckoutResponse> => {
+        void request;
+        throw new Error("network");
+      },
+    );
+    const store = new CartStore({
+      fetchProducts: async (list) => list.map((id) => view(id)),
+      storage: {
+        getItem: () => {
+          throw new Error("blocked");
+        },
+        setItem: () => {
+          throw new Error("blocked");
+        },
+      },
+      startCheckout,
+      navigate: vi.fn(),
+      newAttemptId,
+    });
+    store.load();
+    await store.addItem(view(STOCK_A), 1);
+
+    await store.checkout();
+    await store.checkout();
+
+    const [first, second] = startCheckout.mock.calls.map(([r]) => r);
+    expect(second!.attemptId).toBe(first!.attemptId);
+  });
+
+  it("asks for availability without its own pending attempt's hold", async () => {
+    const { store, startCheckout } = await checkoutSetup([
+      { ok: true, url: URL_A },
+    ]);
+    await store.checkout();
+    const fetchProducts = vi.fn(async (list: string[]) =>
+      list.map((id) => view(id)),
+    );
+    const storage = new MemoryStorage();
+    storage.setItem(
+      "heavycards:checkout-attempt",
+      JSON.stringify({
+        id: startCheckout.mock.calls[0]![0].attemptId,
+        fp: "x",
+      }),
+    );
+    const next = new CartStore({ fetchProducts, storage });
+    storage.setItem(
+      CART_STORAGE_KEY,
+      serializeCart({ lines: [{ productId: STOCK_A, quantity: 1 }] }),
+    );
+
+    next.load();
+    await next.refresh();
+
+    expect(fetchProducts).toHaveBeenCalledWith(
+      [STOCK_A],
+      startCheckout.mock.calls[0]![0].attemptId,
+    );
+  });
+
+  it("ignores repeated clicks while a checkout is starting", async () => {
+    const { store, startCheckout } = await checkoutSetup([
+      { ok: true, url: URL_A },
+    ]);
+
+    await Promise.all([store.checkout(), store.checkout(), store.checkout()]);
+
+    expect(startCheckout).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts a fresh attempt once when the server closed the old one", async () => {
+    const { store, startCheckout, navigate } = await checkoutSetup([
+      { ok: false, code: "attempt_closed" },
+      { ok: true, url: URL_A },
+    ]);
+
+    await store.checkout();
+
+    const [first, retry] = startCheckout.mock.calls.map(([r]) => r);
+    expect(retry!.previousAttemptId).toBe(first!.attemptId);
+    expect(retry!.attemptId).not.toBe(first!.attemptId);
+    expect(navigate).toHaveBeenCalledWith(URL_A);
+  });
+
+  it("explains a rejected cart in Swedish and reloads current data", async () => {
+    const views = { [STOCK_A]: view(STOCK_A, { name: "Booster Box" }) };
+    const { store, navigate } = await checkoutSetup(
+      [
+        {
+          ok: false,
+          code: "rejected",
+          issues: [
+            {
+              productId: STOCK_A,
+              kind: "price_changed",
+              unitPriceAmount: 12_000,
+              expectedUnitPriceAmount: 10_000,
+            },
+          ],
+          conflict: null,
+        },
+      ],
+      views,
+    );
+    views[STOCK_A] = view(STOCK_A, {
+      name: "Booster Box",
+      unitPriceAmount: 12_000,
+    });
+
+    await store.checkout();
+
+    expect(navigate).not.toHaveBeenCalled();
+    expect(store.getSnapshot().products[STOCK_A]!.unitPriceAmount).toBe(12_000);
+    expect(store.getSnapshot().checkout).toEqual({
+      status: "error",
+      message: {
+        title:
+          "Kundvagnen har ändrats. Kontrollera den och tryck på Till kassan igen.",
+        details: [
+          `Booster Box: Priset har ändrats från ${formatPrice(10_000)} till ${formatPrice(12_000)}.`,
+        ],
+      },
+    });
+
+    // Changing the cart clears the outdated message.
+    store.setQuantity(STOCK_A, 1);
+    expect(store.getSnapshot().checkout.status).toBe("idle");
+  });
+
+  it("lowers quantities the server says are no longer available", async () => {
+    const views = { [STOCK_A]: view(STOCK_A) };
+    const { store } = await checkoutSetup(
+      [
+        {
+          ok: false,
+          code: "rejected",
+          issues: [
+            {
+              productId: STOCK_A,
+              kind: "insufficient_quantity",
+              availableQuantity: 1,
+            },
+          ],
+          conflict: null,
+        },
+      ],
+      views,
+    );
+    views[STOCK_A] = view(STOCK_A, { maxQuantity: 1 });
+
+    await store.checkout();
+
+    expect(store.getSnapshot().cart.lines[0]!.quantity).toBe(1);
+    expect(store.getSnapshot().adjustments[STOCK_A]).toBe(2);
+    expect(store.getSnapshot().checkout.status).toBe("error");
+  });
+
+  it("does not start checkout while the cart has problems", async () => {
+    const views = { [STOCK_A]: view(STOCK_A) };
+    const { store, startCheckout } = await checkoutSetup([], views);
+    views[STOCK_A] = view(STOCK_A, {
+      available: false,
+      unavailableReason: "sold_out",
+      maxQuantity: 0,
+    });
+    await store.refresh();
+
+    await store.checkout();
+
+    expect(startCheckout).not.toHaveBeenCalled();
+  });
+
+  it("shows a rate-limit message and recovers after the back button", async () => {
+    const { store } = await checkoutSetup([
+      { ok: false, code: "rate_limited" },
+    ]);
+
+    await store.checkout();
+    expect(store.getSnapshot().checkout).toMatchObject({
+      status: "error",
+      message: { title: expect.stringContaining("många försök") },
+    });
+
+    store.resetCheckout();
+    expect(store.getSnapshot().checkout.status).toBe("idle");
   });
 });

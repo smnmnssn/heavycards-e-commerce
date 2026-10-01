@@ -6,6 +6,7 @@ import type {
   ProductType,
 } from "@/generated/prisma/client";
 import { multiplyAmount, sumAmounts, vatPortionOfGross } from "@/lib/money";
+import { RESERVATION_GRACE_MS } from "@/server/domain/checkout";
 import { calculateShippingAmount } from "@/server/domain/shipping";
 
 /**
@@ -476,8 +477,7 @@ export async function seedDatabase(
         createdDaysAgo: number;
         customer?: {
           email: string;
-          firstName: string;
-          lastName: string;
+          customerName: string;
           phone: string;
           addressLine1: string;
           postalCode: string;
@@ -502,8 +502,7 @@ export async function seedDatabase(
           createdDaysAgo: 10,
           customer: {
             email: "anna.andersson@example.com",
-            firstName: "Anna",
-            lastName: "Andersson",
+            customerName: "Anna Andersson",
             phone: "+46701740605",
             addressLine1: "Storgatan 1",
             postalCode: "111 22",
@@ -521,8 +520,7 @@ export async function seedDatabase(
           createdDaysAgo: 1,
           customer: {
             email: "erik.eriksson@example.com",
-            firstName: "Erik",
-            lastName: "Eriksson",
+            customerName: "Erik Eriksson",
             phone: "+46701740606",
             addressLine1: "Kungsgatan 12",
             postalCode: "411 19",
@@ -542,8 +540,7 @@ export async function seedDatabase(
           createdDaysAgo: 120,
           customer: {
             email: "maria.nilsson@example.com",
-            firstName: "Maria",
-            lastName: "Nilsson",
+            customerName: "Maria Nilsson",
             phone: "+46701740607",
             addressLine1: "Drottninggatan 5",
             postalCode: "211 11",
@@ -617,6 +614,13 @@ export async function seedDatabase(
             fulfillmentStatus: row.fulfillmentStatus ?? "NEW",
             paidAt: isPaid ? createdAt : null,
             stripeCheckoutSessionId: row.checkoutSessionId,
+            // Checkout orders record when their session stopped accepting
+            // payment; reservations hold until then plus the grace period.
+            checkoutExpiresAt: row.reservation
+              ? new Date(
+                  row.reservation.expiresAt.getTime() - RESERVATION_GRACE_MS,
+                )
+              : null,
             stripePaymentIntentId: row.paymentIntentId ?? null,
             shippingCarrier: shippedAt ? "POSTNORD" : null,
             trackingNumber: row.trackingNumber ?? null,

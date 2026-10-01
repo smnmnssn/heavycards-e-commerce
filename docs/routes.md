@@ -9,17 +9,19 @@ since published URLs need permanent redirects once live.
 
 All storefront routes below exist as of Milestone 4 (except `/review/[token]`).
 
-| Route                        | Page                                                | Rendering | Indexable                |
-| ---------------------------- | --------------------------------------------------- | --------- | ------------------------ |
-| `/`                          | Homepage with database-backed sections              | ISR 60 s  | yes                      |
-| `/pokemon-tcg`               | Landing page: categories, full listing (set filter) | dynamic   | yes (unfiltered)         |
-| `/pokemon-tcg/[productSlug]` | Product page                                        | ISR 60 s  | yes; archived: `noindex` |
-| `/kategori/[slug]`           | Category landing page                               | dynamic   | yes (unfiltered)         |
-| `/set/[slug]`                | Pokémon set landing page                            | dynamic   | yes (unfiltered)         |
-| `/nyheter`                   | ACTIVE products published in the last 60 days       | dynamic   | yes                      |
-| `/kommande`                  | COMING_SOON, preorders and future release dates     | dynamic   | yes                      |
-| `/sok?q=…`                   | Search results                                      | dynamic   | no                       |
-| `/review/[token]`            | Secure review page (Milestone 11)                   | —         | no                       |
+| Route                        | Page                                                                       | Rendering | Indexable                |
+| ---------------------------- | -------------------------------------------------------------------------- | --------- | ------------------------ |
+| `/`                          | Homepage with database-backed sections                                     | ISR 60 s  | yes                      |
+| `/pokemon-tcg`               | Landing page: categories, full listing (set filter)                        | dynamic   | yes (unfiltered)         |
+| `/pokemon-tcg/[productSlug]` | Product page                                                               | ISR 60 s  | yes; archived: `noindex` |
+| `/kategori/[slug]`           | Category landing page                                                      | dynamic   | yes (unfiltered)         |
+| `/set/[slug]`                | Pokémon set landing page                                                   | dynamic   | yes (unfiltered)         |
+| `/nyheter`                   | ACTIVE products published in the last 60 days                              | dynamic   | yes                      |
+| `/kommande`                  | COMING_SOON, preorders and future release dates                            | dynamic   | yes                      |
+| `/sok?q=…`                   | Search results                                                             | dynamic   | no                       |
+| `/review/[token]`            | Secure review page (Milestone 11)                                          | —         | no                       |
+| `/kassa/bekraftelse`         | Stripe success URL: order number and DB payment state (never assumes paid) | dynamic   | no                       |
+| `/kassa/avbruten`            | Stripe cancel URL: cart kept, "Visa kundvagnen"                            | ISR 60 s  | no                       |
 
 Unknown product, category and set slugs, draft or unpublished products, and
 page numbers beyond the last page return HTTP 404 with the store's 404 page.
@@ -97,28 +99,32 @@ Swedish characters are transliterated in slugs (å/ä → a, ö → o).
 
 ## Admin and API
 
-| Route                             | Purpose                                                                                   | Milestone |
-| --------------------------------- | ----------------------------------------------------------------------------------------- | --------- |
-| `/admin/login`                    | Sign-in (public)                                                                          | 6         |
-| `/admin/forgot-password`          | Request a password-reset link (public)                                                    | 6         |
-| `/admin/reset-password`           | Set a new password with `?token=` (public)                                                | 6         |
-| `/admin/invite`                   | Accept an invitation with `?token=` (public)                                              | 6         |
-| `/admin`                          | Dashboard (signed in)                                                                     | 6         |
-| `/admin/users`                    | Administrator management (OWNER only)                                                     | 6         |
-| `/admin/products`                 | Product list: search, filters, low stock (OWNER, ADMIN)                                   | 7         |
-| `/admin/products/new`             | Create a product                                                                          | 7         |
-| `/admin/products/[id]`            | Edit a product: content, price, stock, status, images, SEO; delete only unused drafts     | 7         |
-| `/admin/categories`               | Category list; `/new` and `/[id]` create and edit (delete only when unused)               | 7         |
-| `/admin/sets`                     | Pokémon-set list; `/new` and `/[id]` create and edit (delete only when unused)            | 7         |
-| `/admin/**`                       | Further admin areas (signed in)                                                           | 8+        |
-| `/api/auth/*`                     | Better Auth: sign-in, sign-out, get-session, password reset only; every other path is 404 | 6         |
-| `/api/health`                     | Health check                                                                              | 1–2       |
-| `/api/cart`                       | POST: current data for cart product IDs (read-only)                                       | 5         |
-| `/api/admin/products/[id]/images` | POST: upload one product image (same origin, signed-in OWNER/ADMIN, ≤ 4 MB)               | 7         |
-| `/api/media/*`                    | GET: images stored by the local storage provider (development/E2E only; 404 otherwise)    | 7         |
-| `/api/stripe/webhook`             | Stripe webhook                                                                            | 9         |
+| Route                             | Purpose                                                                                                             | Milestone |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------- | --------- |
+| `/admin/login`                    | Sign-in (public)                                                                                                    | 6         |
+| `/admin/forgot-password`          | Request a password-reset link (public)                                                                              | 6         |
+| `/admin/reset-password`           | Set a new password with `?token=` (public)                                                                          | 6         |
+| `/admin/invite`                   | Accept an invitation with `?token=` (public)                                                                        | 6         |
+| `/admin`                          | Dashboard (signed in)                                                                                               | 6         |
+| `/admin/users`                    | Administrator management (OWNER only)                                                                               | 6         |
+| `/admin/products`                 | Product list: search, filters, low stock (OWNER, ADMIN)                                                             | 7         |
+| `/admin/products/new`             | Create a product                                                                                                    | 7         |
+| `/admin/products/[id]`            | Edit a product: content, price, stock, status, images, SEO; delete only unused drafts                               | 7         |
+| `/admin/categories`               | Category list; `/new` and `/[id]` create and edit (delete only when unused)                                         | 7         |
+| `/admin/sets`                     | Pokémon-set list; `/new` and `/[id]` create and edit (delete only when unused)                                      | 7         |
+| `/admin/**`                       | Further admin areas (signed in)                                                                                     | 8+        |
+| `/api/auth/*`                     | Better Auth: sign-in, sign-out, get-session, password reset only; every other path is 404                           | 6         |
+| `/api/health`                     | Health check                                                                                                        | 1–2       |
+| `/api/cart`                       | POST: current data for cart product IDs (read-only); optional `attemptId` excludes that checkout attempt's own hold | 5, 8      |
+| `/api/checkout`                   | POST: start Stripe Checkout (same origin, rate-limited, validates and reserves; returns the Stripe URL)             | 8         |
+| `/api/admin/products/[id]/images` | POST: upload one product image (same origin, signed-in OWNER/ADMIN, ≤ 4 MB)                                         | 7         |
+| `/api/media/*`                    | GET: images stored by the local storage provider (development/E2E only; 404 otherwise)                              | 7         |
+| `/api/stripe/webhook`             | Stripe webhook                                                                                                      | 9         |
 
-`/admin/**` and `/api/**` send `X-Robots-Tag: noindex, nofollow` (next.config.ts).
+`/admin/**`, `/kassa/**` and `/api/**` send `X-Robots-Tag: noindex, nofollow`
+(next.config.ts); `/kassa/**` also sends `Referrer-Policy: no-referrer`
+because the success URL carries the Stripe session ID. The `/kassa` pages are
+not linked from navigation or the sitemap.
 `/admin/**` also sends `Referrer-Policy: no-referrer`, because invitation and
 reset links carry tokens in the query string. `src/proxy.ts` redirects
 requests without a session cookie to `/admin/login`; it is a convenience only,

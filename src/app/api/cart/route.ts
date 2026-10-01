@@ -6,6 +6,8 @@ import { loadCartProducts } from "@/server/cart/cart-products";
 
 const requestSchema = z.object({
   productIds: z.array(z.uuid()).max(MAX_CART_LINES),
+  /** The browser's current checkout attempt (see loadCartProducts). */
+  attemptId: z.uuid().optional(),
 });
 
 const noStore = { "Cache-Control": "no-store" };
@@ -37,7 +39,12 @@ export async function POST(request: Request): Promise<Response> {
 
   try {
     const productIds = [...new Set(parsed.data.productIds)];
-    const products = await loadCartProducts(db, productIds, new Date());
+    const { attemptId } = parsed.data;
+    const products = attemptId
+      ? await loadCartProducts(db, productIds, new Date(), {
+          ownAttemptId: attemptId,
+        })
+      : await loadCartProducts(db, productIds, new Date());
     return Response.json({ products }, { headers: noStore });
   } catch (error) {
     console.error("[cart] product lookup failed", {

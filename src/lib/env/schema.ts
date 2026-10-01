@@ -47,6 +47,15 @@ const rawServerEnvSchema = z.object({
   STORAGE_PROVIDER: optionalNonEmpty(z.enum(["vercel-blob", "local"])),
   BLOB_READ_WRITE_TOKEN: optionalNonEmpty(z.string()),
   STORAGE_LOCAL_DIR: optionalNonEmpty(z.string()),
+  PAYMENT_GATEWAY: optionalNonEmpty(z.enum(["stripe", "fake"])),
+  STRIPE_SECRET_KEY: optionalNonEmpty(
+    z
+      .string()
+      .regex(
+        /^(sk|rk)_(test|live)_[A-Za-z0-9]+$/,
+        "must be a Stripe secret or restricted key",
+      ),
+  ),
 });
 
 /**
@@ -78,6 +87,20 @@ export type StorageConfig = Readonly<
 
 export const DEFAULT_LOCAL_STORAGE_DIR = ".storage";
 
+/**
+ * How Checkout Sessions are created (src/server/checkout):
+ * - `stripe` (default): Stripe Hosted Checkout. Without a secret key the
+ *   store works, but checkout answers "payment unavailable". Live keys are
+ *   accepted only in Vercel production, and production requires one, so test
+ *   and live credentials are never mixed.
+ * - `fake`: an in-process stand-in that never contacts Stripe and returns
+ *   checkout.stripe.com-shaped URLs. For local E2E runs only; refused on
+ *   Vercel.
+ */
+export type PaymentConfig = Readonly<
+  { gateway: "stripe"; secretKey: string | null } | { gateway: "fake" }
+>;
+
 const PLACEHOLDER_SENDER = "HeavyCards <no-reply@heavycards.invalid>";
 
 export type ServerEnv = Readonly<{
@@ -91,6 +114,7 @@ export type ServerEnv = Readonly<{
   authSecret: string;
   email: EmailConfig;
   storage: StorageConfig;
+  payments: PaymentConfig;
 }>;
 
 export class EnvValidationError extends Error {
@@ -201,6 +225,33 @@ function resolveStorage(
   return { provider, blobToken: env.BLOB_READ_WRITE_TOKEN ?? null };
 }
 
+function resolvePayments(
+  env: z.infer<typeof rawServerEnvSchema>,
+): PaymentConfig | Error {
+  const gateway = env.PAYMENT_GATEWAY ?? "stripe";
+  if (gateway === "fake") {
+    if (env.VERCEL_ENV) {
+      return new Error("PAYMENT_GATEWAY: fake is for local test runs only");
+    }
+    return { gateway };
+  }
+
+  const key = env.STRIPE_SECRET_KEY ?? null;
+  const isLive = key !== null && /^(sk|rk)_live_/.test(key);
+  if (env.VERCEL_ENV === "production") {
+    if (!isLive) {
+      return new Error(
+        "STRIPE_SECRET_KEY: a live key is required in the Vercel production environment",
+      );
+    }
+  } else if (isLive) {
+    return new Error(
+      "STRIPE_SECRET_KEY: live keys are only allowed in the Vercel production environment; use a test key",
+    );
+  }
+  return { gateway, secretKey: key };
+}
+
 /**
  * Validates a raw environment object. Error messages name the offending
  * variables but never echo their values, so secrets cannot leak into logs.
@@ -220,13 +271,15 @@ export function parseServerEnv(
   const siteUrl = resolveSiteUrl(result.data);
   const email = resolveEmail(result.data);
   const storage = resolveStorage(result.data);
-  const errors = [siteUrl, email, storage].filter(
+  const payments = resolvePayments(result.data);
+  const errors = [siteUrl, email, storage, payments].filter(
     (value) => value instanceof Error,
   );
   if (
     siteUrl instanceof Error ||
     email instanceof Error ||
-    storage instanceof Error
+    storage instanceof Error ||
+    payments instanceof Error
   ) {
     throw new EnvValidationError(errors.map((error) => error.message));
   }
@@ -239,5 +292,6 @@ export function parseServerEnv(
     authSecret: result.data.AUTH_SECRET,
     email: Object.freeze(email),
     storage: Object.freeze(storage),
+    payments: Object.freeze(payments),
   });
 }

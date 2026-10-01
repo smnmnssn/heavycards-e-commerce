@@ -173,6 +173,55 @@ describe("order constraints", () => {
     ).rejects.toThrow("orders_paid_details_check");
   });
 
+  it("requires the full customer name once paid, but not while pending", async () => {
+    const pending = await createPendingOrder(db);
+    expect(pending.customerName).toBeNull();
+
+    await expect(
+      createPendingOrder(db, { ...paidCustomerDetails, customerName: null }),
+    ).rejects.toThrow("orders_paid_details_check");
+    await expect(
+      db.order.update({
+        where: { id: pending.id },
+        data: { ...paidCustomerDetails },
+      }),
+    ).resolves.toMatchObject({ customerName: "Kim Kund" });
+  });
+
+  it.each(["", "   "])(
+    "rejects a blank customer name (%j)",
+    async (customerName) => {
+      await expect(createPendingOrder(db, { customerName })).rejects.toThrow(
+        "orders_customer_name_not_blank_check",
+      );
+    },
+  );
+
+  it.each(["email", "addressLine1", "postalCode", "city", "paidAt"] as const)(
+    "requires %s once paid",
+    async (field) => {
+      await expect(
+        createPendingOrder(db, { ...paidCustomerDetails, [field]: null }),
+      ).rejects.toThrow("orders_paid_details_check");
+    },
+  );
+
+  it("stores the full name as one value, never split", async () => {
+    const order = await createPendingOrder(db, {
+      ...paidCustomerDetails,
+      customerName: "Anna-Karin von Essen Lindqvist",
+    });
+    expect(order.customerName).toBe("Anna-Karin von Essen Lindqvist");
+  });
+
+  it("allows one order per checkout attempt", async () => {
+    const attempt = "0199a3b4-0000-4000-8000-000000000001";
+    await createPendingOrder(db, { checkoutAttemptId: attempt });
+    await expect(
+      createPendingOrder(db, { checkoutAttemptId: attempt }),
+    ).rejects.toThrow("orders_checkout_attempt_id_key");
+  });
+
   it("accepts a paid order with customer details", async () => {
     const order = await createPendingOrder(db, paidCustomerDetails);
 

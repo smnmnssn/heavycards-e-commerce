@@ -20,8 +20,9 @@ server-side logic. Market: Sweden only, Swedish UI, SEK.
 | 4 — Catalog                | Done   |
 | 5 — Cart                   | Done   |
 | 6 — Admin authentication   | Done   |
-| 7 — Product administration | Review |
-| 8–15                       | —      |
+| 7 — Product administration | Done   |
+| 8 — Checkout and inventory | Review |
+| 9–15                       | —      |
 
 Sections below marked _(later milestone)_ are placeholders and are filled in as
 those features land.
@@ -42,7 +43,7 @@ Versions are pinned exactly in `package.json`, and `package-lock.json` is commit
 | Auth/email | Better Auth 1.7.7 (admin authentication), Resend 6.31 (admin emails)                       |
 | Admin      | React Hook Form 7.89 with `@hookform/resolvers` 5.9 (shared Zod schemas)                   |
 | Images     | Vercel Blob 2.8 behind `src/lib/storage` (local files in development), sharp 0.35          |
-| Planned    | Stripe Checkout                                                                            |
+| Payments   | Stripe Hosted Checkout via `stripe` 23.0 (API version `2026-09-30.endive`)                 |
 
 ## Local setup
 
@@ -81,7 +82,8 @@ previews, which fall back to the deployment URL. `APP_URL` is also the only
 origin trusted by the admin login's origin/CSRF checks.
 
 Email settings (`EMAIL_TRANSPORT`, `RESEND_API_KEY`, `EMAIL_FROM`) are described
-under [Email](#email). Server code reads validated
+under [Email](#email). Payment settings (`STRIPE_SECRET_KEY`,
+`PAYMENT_GATEWAY`) are described under [Stripe](#stripe-checkout-and-local-development). Server code reads validated
 values from `@/lib/env/server`, which is marked `server-only`.
 
 ## Scripts
@@ -148,6 +150,14 @@ with an `E2E-`/`e2e-` prefix in the development database and delete them
 project uses desktop Chromium; its phone-layout checks open a Pixel 7
 context. To run only them:
 `npx playwright test --project catalog-admin --no-deps`.
+
+The checkout tests (`e2e/checkout.spec.ts`) run last, as the `checkout`
+project. The test server uses the fake payment gateway
+(`PAYMENT_GATEWAY=fake`), which never contacts Stripe and returns
+`checkout.stripe.com` URLs that the tests intercept. The tests create their own
+`CHK-E2E-` products, pending orders and reservations, and delete them before
+and after the run, so the seeded catalog never gains reservations. To run only
+them: `npx playwright test --project checkout --no-deps`.
 
 CI (`.github/workflows/ci.yml`) runs on every push to `main` and on pull requests:
 
@@ -262,7 +272,36 @@ All people, addresses and Stripe IDs are fictional. The seed refuses to run in
 production and against non-local databases unless
 `SEED_ALLOW_REMOTE_DATABASE=true` is set (disposable staging only).
 
-## Stripe local webhook development _(Milestones 8–9)_
+## Stripe Checkout and local development
+
+Customers pay on Stripe Hosted Checkout; HeavyCards never sees card data. The
+flow, reservations and idempotency are described in
+[docs/architecture.md](docs/architecture.md) → Milestone 8.
+
+**Keys.** `STRIPE_SECRET_KEY` is a secret or restricted key from the Stripe
+Dashboard (Developers → API keys). Use **test-mode** keys (`sk_test_…` /
+`rk_test_…`) everywhere except Vercel production. The environment validation
+refuses live keys outside Vercel production and requires a live key there, so
+test and live credentials are never mixed. Without a key the store still runs;
+"Till kassan" then shows "Det gick inte att starta betalningen". A restricted
+key needs write access to Checkout Sessions only.
+
+**Trying checkout locally.** Put a test key in `.env.local`, start the app and
+check out; Stripe's test cards (e.g. `4242 4242 4242 4242`) work on the hosted
+page. Until Milestone 9 adds webhook processing, a completed test payment
+leaves the order PENDING: the success page honestly says the payment is being
+verified.
+
+**Without Stripe.** `PAYMENT_GATEWAY=fake` uses an in-process stand-in that
+never contacts Stripe (the E2E tests use it). It is refused on Vercel.
+
+**Payment methods.** The application does not list payment methods: Stripe
+offers whatever is enabled in the Dashboard (Settings → Payment methods) and
+eligible for the session. For the Swedish store enable Cards, Swish and Klarna
+there, in test mode first. Their availability depends on the Stripe account
+and is not simulated by the application.
+
+**Webhooks** (`stripe listen`, `STRIPE_WEBHOOK_SECRET`) arrive in Milestone 9.
 
 ## Email
 

@@ -14,7 +14,16 @@ import {
   type CartConflict,
   type ShipmentGroup,
 } from "@/lib/cart/cart";
-import type { CartProductView } from "@/lib/cart/evaluate";
+import { evaluateCart, type CartProductView } from "@/lib/cart/evaluate";
+import {
+  checkoutFailureMessage,
+  GENERIC_CHECKOUT_ERROR,
+  isStripeCheckoutUrl,
+  type CheckoutFailureMessage,
+  type CheckoutLineRequest,
+  type CheckoutRequest,
+  type CheckoutResponse,
+} from "@/lib/checkout/checkout";
 
 /*
  * Client-side cart store (framework-free; React reads it through
@@ -29,6 +38,20 @@ import type { CartProductView } from "@/lib/cart/evaluate";
 
 export type HydrationStatus = "idle" | "loading" | "ready" | "error";
 
+export type CheckoutState = Readonly<
+  | { status: "idle" | "submitting" | "redirecting" }
+  | { status: "error"; message: CheckoutFailureMessage }
+>;
+
+/**
+ * The current checkout attempt, kept in browser storage so a retry of the
+ * same cart (double click, network retry, back from Stripe) reuses the
+ * server's order and Stripe session instead of reserving stock again.
+ * `fp` fingerprints the lines and displayed prices the attempt was for.
+ */
+export const CHECKOUT_ATTEMPT_STORAGE_KEY = "heavycards:checkout-attempt";
+type StoredAttempt = { id: string; fp: string };
+
 export type CartStoreState = Readonly<{
   cart: Cart;
   /** Browser storage has been read (false during SSR and first paint). */
@@ -42,6 +65,7 @@ export type CartStoreState = Readonly<{
   isOpen: boolean;
   /** Latest polite screen-reader announcement. */
   announcement: string;
+  checkout: CheckoutState;
 }>;
 
 export type AddResult =
@@ -53,8 +77,17 @@ export type AddResult =
 export type CartStorage = Pick<Storage, "getItem" | "setItem">;
 
 type Dependencies = {
-  fetchProducts: (productIds: string[]) => Promise<CartProductView[]>;
+  /** `attemptId`: the current checkout attempt, whose own hold is ignored. */
+  fetchProducts: (
+    productIds: string[],
+    attemptId?: string,
+  ) => Promise<CartProductView[]>;
   storage?: CartStorage | null;
+  /** POST /api/checkout; rejects on network failure. */
+  startCheckout?: (request: CheckoutRequest) => Promise<CheckoutResponse>;
+  /** Leaves the page for the payment URL. */
+  navigate?: (url: string) => void;
+  newAttemptId?: () => string;
 };
 
 const initialState: CartStoreState = {
@@ -66,6 +99,7 @@ const initialState: CartStoreState = {
   pulseKey: 0,
   isOpen: false,
   announcement: "",
+  checkout: { status: "idle" },
 };
 
 const quantityText = (count: number) =>
@@ -76,6 +110,8 @@ export class CartStore {
   private readonly listeners = new Set<() => void>();
   private refreshSeq = 0;
   private pendingRefresh: Promise<boolean> | null = null;
+  /** Fallback when browser storage is blocked. */
+  private attemptInMemory: StoredAttempt | null = null;
 
   constructor(private readonly deps: Dependencies) {}
 
@@ -119,7 +155,12 @@ export class CartStore {
   }
 
   private commit(cart: Cart) {
-    this.set({ cart });
+    // A changed cart makes an earlier checkout error obsolete.
+    this.set(
+      this.state.checkout.status === "error"
+        ? { cart, checkout: { status: "idle" } }
+        : { cart },
+    );
     try {
       this.deps.storage?.setItem(CART_STORAGE_KEY, serializeCart(cart));
     } catch {
@@ -144,8 +185,12 @@ export class CartStore {
 
     const seq = ++this.refreshSeq;
     this.set({ hydration: "loading" });
-    this.pendingRefresh = this.deps
-      .fetchProducts(ids)
+    const attemptId = this.readAttempt()?.id;
+    this.pendingRefresh = (
+      attemptId
+        ? this.deps.fetchProducts(ids, attemptId)
+        : this.deps.fetchProducts(ids)
+    )
       .then((views) => {
         const products = { ...this.state.products };
         for (const view of views) products[view.productId] = view;
@@ -281,11 +326,145 @@ export class CartStore {
     this.set({ adjustments });
   }
 
+  // --- Checkout ---------------------------------------------------------------------
+
+  /**
+   * Starts Stripe Checkout for the cart as currently shown. Only intent and
+   * the displayed prices are sent; the server recalculates everything and
+   * refuses if anything changed. On success the browser leaves for Stripe;
+   * the cart is kept (it is cleared only after a verified payment).
+   */
+  async checkout(): Promise<void> {
+    const status = this.state.checkout.status;
+    if (status === "submitting" || status === "redirecting") return;
+    const { startCheckout, navigate } = this.deps;
+    if (!startCheckout || !navigate) return;
+
+    const evaluated = evaluateCart(this.state.cart, this.state.products);
+    if (
+      this.state.cart.lines.length === 0 ||
+      evaluated.incomplete ||
+      evaluated.hasIssues
+    ) {
+      return;
+    }
+    const lines: CheckoutLineRequest[] = evaluated.lines.map(
+      ({ line, product }) => ({
+        productId: line.productId,
+        quantity: line.quantity,
+        expectedUnitPriceAmount: product!.unitPriceAmount!,
+      }),
+    );
+    const fp = lines
+      .map((l) => `${l.productId}:${l.quantity}:${l.expectedUnitPriceAmount}`)
+      .sort()
+      .join("|");
+
+    this.set({ checkout: { status: "submitting" } });
+    const stored = this.readAttempt();
+    let attempt: StoredAttempt =
+      stored?.fp === fp ? stored : { id: this.newAttemptId(), fp };
+    let previous = stored && stored.id !== attempt.id ? stored.id : undefined;
+
+    let response: CheckoutResponse | null = null;
+    try {
+      // Stored before sending: if the response is lost, the next click
+      // repeats the same attempt instead of reserving again.
+      this.writeAttempt(attempt);
+      response = await startCheckout({
+        attemptId: attempt.id,
+        previousAttemptId: previous,
+        lines,
+      });
+      if (!response.ok && response.code === "attempt_closed") {
+        // That attempt is finished (expired, released or changed): start a
+        // new one, which also releases the old one on the server.
+        previous = attempt.id;
+        attempt = { id: this.newAttemptId(), fp };
+        this.writeAttempt(attempt);
+        response = await startCheckout({
+          attemptId: attempt.id,
+          previousAttemptId: previous,
+          lines,
+        });
+      }
+    } catch {
+      response = null;
+    }
+
+    if (response?.ok && isStripeCheckoutUrl(response.url)) {
+      this.set({ checkout: { status: "redirecting" } });
+      this.announce("Du skickas vidare till betalningen.");
+      navigate(response.url);
+      return;
+    }
+
+    let message: CheckoutFailureMessage = {
+      title: GENERIC_CHECKOUT_ERROR,
+      details: [],
+    };
+    if (response && !response.ok) {
+      if (response.code === "rejected") {
+        // Show current prices and availability, and lower quantities.
+        await this.refresh();
+      }
+      message = checkoutFailureMessage(
+        response,
+        (id) => this.state.products[id]?.name ?? null,
+      );
+    }
+    this.set({ checkout: { status: "error", message } });
+    this.announce([message.title, ...message.details].join(" "));
+  }
+
+  /** After returning with the browser's back button (page cache). */
+  resetCheckout() {
+    if (this.state.checkout.status !== "idle") {
+      this.set({ checkout: { status: "idle" } });
+    }
+  }
+
+  private newAttemptId(): string {
+    return this.deps.newAttemptId?.() ?? crypto.randomUUID();
+  }
+
+  private readAttempt(): StoredAttempt | null {
+    try {
+      const raw = this.deps.storage?.getItem(CHECKOUT_ATTEMPT_STORAGE_KEY);
+      const value: unknown = raw ? JSON.parse(raw) : null;
+      if (
+        value &&
+        typeof value === "object" &&
+        typeof (value as StoredAttempt).id === "string" &&
+        typeof (value as StoredAttempt).fp === "string" &&
+        /^[0-9a-f-]{36}$/i.test((value as StoredAttempt).id)
+      ) {
+        return value as StoredAttempt;
+      }
+    } catch {
+      // Corrupt or blocked storage: fall back to this page view's attempt.
+    }
+    return this.attemptInMemory;
+  }
+
+  private writeAttempt(attempt: StoredAttempt) {
+    this.attemptInMemory = attempt;
+    try {
+      this.deps.storage?.setItem(
+        CHECKOUT_ATTEMPT_STORAGE_KEY,
+        JSON.stringify(attempt),
+      );
+    } catch {
+      // Without storage, idempotency still holds within this page view.
+    }
+  }
+
   // --- Drawer and announcements ---------------------------------------------------
 
   /** Opens the drawer. Only ever called from an explicit customer action. */
   open() {
     this.set({ isOpen: true });
+    this.resetCheckout();
     void this.refresh();
   }
 

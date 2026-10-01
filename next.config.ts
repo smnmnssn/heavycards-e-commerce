@@ -29,6 +29,10 @@ const adminHeaders = [
   { key: "Referrer-Policy", value: "no-referrer" },
 ];
 
+// Checkout return pages: never indexed, and the Stripe session ID in the
+// success URL is never sent onward as a Referer.
+const checkoutHeaders = adminHeaders;
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   images: {
@@ -53,6 +57,7 @@ const nextConfig: NextConfig = {
       { source: "/:path*", headers: securityHeaders },
       { source: "/admin", headers: adminHeaders },
       { source: "/admin/:path*", headers: adminHeaders },
+      { source: "/kassa/:path*", headers: checkoutHeaders },
       { source: "/api/:path*", headers: noIndexHeaders },
     ];
   },
