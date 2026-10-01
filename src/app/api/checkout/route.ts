@@ -5,6 +5,9 @@ import { env } from "@/lib/env/server";
 import { releaseExpiredReservations } from "@/server/checkout/cleanup";
 import { handleCheckoutRequest } from "@/server/checkout/handle-request";
 import { getCheckoutGateway } from "@/server/checkout/server";
+import { logEmail } from "@/server/email/log";
+import { processDueEmails } from "@/server/email/outbox";
+import { emailDeps } from "@/server/email/server";
 import { reconcileCheckouts } from "@/server/payments/reconcile";
 import { revalidateAfterInventoryChange } from "@/server/payments/revalidate";
 import { pruneRateLimits } from "@/server/security/rate-limit";
@@ -32,6 +35,14 @@ export async function POST(request: Request): Promise<Response> {
       console.error("[checkout] reservation cleanup failed", {
         error: error instanceof Error ? error.name : "unknown",
       });
+    }
+    // Separately, so an email problem never affects the cleanup above: a few
+    // due or retryable emails (e.g. confirmations of orders reconciled just
+    // now), which keeps retries moving between scheduled runs.
+    try {
+      await processDueEmails(emailDeps, { limit: 3 });
+    } catch (error) {
+      logEmail("error", "email processing after checkout failed", { error });
     }
   });
 

@@ -1563,3 +1563,323 @@ email, phone or address. Tests assert this for signature failures.
 - If a restricted key is used, grant it the reads listed above.
 - Decide who monitors `PAYMENT_NEEDS_ATTENTION` entries until the admin order
   view (Milestone 12) shows them.
+
+## Milestone 10 — Transactional email (2026-10-02)
+
+Customer emails for paid and shipped orders, on the Milestone 6 Resend
+foundation. Schema details are in [database.md](database.md). Review links
+are Milestone 11; the admin order UI is Milestone 12.
+
+### Layers
+
+| Layer                                                                     | Module                                     |
+| ------------------------------------------------------------------------- | ------------------------------------------ |
+| Transports (Resend, console, file, memory), failure classification        | `src/lib/email/transport.ts`               |
+| Email-safe HTML building blocks                                           | `src/lib/email/html.ts`                    |
+| Order confirmation and shipping templates (pure, from order snapshots)    | `src/server/email/order-templates.ts`      |
+| Delivery rules: keys, backoff, provider window, eligibility (pure)        | `src/server/domain/email-delivery.ts`      |
+| Outbox: enqueue, claim/dispatch, retry, sweep                             | `src/server/email/outbox.ts`               |
+| Wiring to the configured transport; dispatch after the response           | `src/server/email/server.ts`               |
+| Fulfillment transition service (creates the shipping obligation)          | `src/server/orders/fulfillment.ts`         |
+| Integration points: payment finalization, webhook, cron, checkout `after` | `src/server/payments/*`, `src/app/api/...` |
+
+### Outbox, not "send in the transaction"
+
+1. **Obligation.** The business transaction inserts an `EmailDelivery` row:
+   - `finalizePaid` (the one place an order becomes PAID, webhook or
+     reconciliation) inserts the `ORDER_CONFIRMATION` row;
+   - `transitionFulfillment` inserts `ORDER_SHIPPED` on the first SHIPPED.
+
+   The row commits or rolls back with the state change. Unique
+   `(order_id, kind)` plus `ON CONFLICT DO NOTHING` makes a second obligation
+   impossible, and never aborts the caller's transaction.
+
+2. **Dispatch.** `dispatchEmailDelivery` runs outside any transaction:
+   - **claim:** one atomic `UPDATE … WHERE status = 'PENDING' AND due AND
+lease free RETURNING`, which takes a 2-minute lease and increments
+     `attempts` (also the token that proves the lease);
+   - **render** from the order as stored, and re-check eligibility;
+   - **send** with the idempotency key;
+   - **record**, guarded by the attempt number: SENT plus the order's
+     `*EmailSentAt` marker in one transaction, or the failure.
+
+3. **One dispatcher, three triggers.** All three call the same code:
+   - **Immediately:** the webhook route schedules
+     `processDueEmails({ orderId })` with Next's `after()` when an order
+     became paid. Stripe gets its 200 without waiting for Resend.
+   - **Scheduled:** the cron route's email step runs the sweep, then every
+     due delivery (25 per run).
+   - **Piggyback:** up to 3 due emails after each checkout request (its
+     existing `after()`), so retries keep moving between daily cron runs.
+
+### Exactly once for the customer
+
+| Scenario                                                     | Why only one email                                                                                                             |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| Duplicate or redelivered Stripe success, reconciliation race | M9 finalizes once (PENDING guard under the order lock); unique `(order_id, kind)`                                              |
+| Concurrent dispatchers (after(), cron, checkout)             | Only one `UPDATE` can take the lease; the others match no row                                                                  |
+| Repeated runs after success                                  | A SENT row is never claimed again                                                                                              |
+| Repeated or concurrent "mark shipped"                        | Order row lock; same status is a no-op; SHIPPED is reachable once; unique row                                                  |
+| Provider timeout, 5xx, network error                         | Retried with the **same** idempotency key; Resend returns the first email instead of sending again                             |
+| Crash after the provider accepted, before recording          | The lease lapses; the next claim marks the outcome unknown and retries with the same key                                       |
+| Outage longer than Resend's 24-hour key memory               | No blind retry: once 23 hours have passed since the first unknown outcome, the row becomes FAILED and staff decide (see below) |
+
+**Idempotency keys** are `order-confirmation/<order id>` and
+`order-shipped/<order id>`. They are deterministic, so a retry, another process
+or another run uses the same key. Resend's own rules (verified against its
+documentation on 2026-10-02):
+
+- keys are kept for 24 hours and may be up to 256 characters;
+- the same key with the same payload returns the original email ID;
+- the same key with a different payload answers 409
+  `invalid_idempotent_request`;
+- a concurrent request with the same key answers 409
+  `concurrent_idempotent_requests`.
+
+The rendered message is deterministic (items in a fixed order, dates from
+the stored payment time), so a retry has the same payload.
+
+### Failure classification and retries
+
+`classifyResendError` maps a failed send:
+
+| Failure    | Examples                                                                        | Handling                                         |
+| ---------- | ------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `not_sent` | 4xx validation, invalid sender or key, 429 rate limit or quota                  | retry with backoff                               |
+| `unknown`  | network error, our 15 s timeout, 5xx, `concurrent_idempotent_requests`, crash   | retry with the same key while the window is open |
+| `conflict` | `invalid_idempotent_request` (the key was used with a different message before) | FAILED at once: the first one may have arrived   |
+
+- **Backoff:** 1 min, 5 min, 15 min, 1 h, 3 h, 6 h; 7 attempts in total
+  (about 10 hours), then FAILED. The whole schedule fits inside the 23-hour
+  window.
+- **Escalation:** FAILED writes an `EMAIL_NEEDS_ATTENTION` system audit
+  entry (kind, problem, attempts; no personal data) and logs an error.
+  Nothing is retried in a tight loop: a row is attempted only when due, and
+  each trigger processes a bounded batch.
+- **Business state is never touched by a failure:** the order stays PAID or
+  SHIPPED, and the delivery stays PENDING (retryable) or becomes FAILED.
+
+### Eligibility when sending
+
+The order is re-read at send time:
+
+- **Confirmation:** only for PAID or PARTIALLY_REFUNDED orders. A fully
+  REFUNDED order (refunded before the email went out) gets CANCELLED
+  instead of a "thank you for your order".
+- **Shipping:** only for SHIPPED or COMPLETED orders.
+- **Already marked:** an order whose `*EmailSentAt` marker is already set is
+  CANCELLED (`already_sent`).
+- **Recipient:** always `orders.email` of the finalized order. No API,
+  action or parameter accepts a recipient, and nothing customer-facing can
+  trigger a send or a resend. The `/kassa/bekraftelse` page only reads.
+
+### Orders paid before Milestone 10
+
+`enqueueMissingOrderConfirmations` (the first part of the scheduled email
+step) finds orders that:
+
+- are PAID or PARTIALLY_REFUNDED;
+- have `confirmation_email_sent_at` NULL;
+- have no confirmation row.
+
+It inserts their obligation (`ON CONFLICT DO NOTHING`, so concurrent sweeps
+are safe), and the normal dispatcher sends it once. No Stripe event is
+needed. Fully refunded and unpaid orders are skipped. The development seed
+already sets `confirmationEmailSentAt` on its paid orders, so they are not
+mailed. Orders that shipped before Milestone 10 get no shipping email.
+
+### Fulfillment transitions (shared with Milestone 12)
+
+`transitionFulfillment(db, { actorId, input, now })` is the only writer of
+`fulfillmentStatus`. Milestone 12's admin actions call it and then
+`processDueEmails({ orderId })` in `after()`; the tests call it directly.
+
+- Input is Zod-validated: target status; the tracking number is trimmed,
+  ≤ 100 characters, and only letters, digits, space and `- . / _`; carrier.
+- In one transaction (`lock_timeout` 5 s, deadlock retry):
+  - re-check the actor (active, `canManageOrders`, `FOR SHARE`);
+  - lock the order;
+  - validate the transition and the payment precondition;
+  - update the order and audit `UPDATE_ORDER_STATUS`.
+- **First SHIPPED** additionally sets `shippedAt`, keeps or sets the tracking
+  number and carrier, and enqueues `ORDER_SHIPPED`.
+- **Same status again** is a no-op returning `changed: false`. On a SHIPPED
+  order it may correct tracking details (`UPDATE_ORDER_TRACKING`) and never
+  emails.
+- **Results:** `INVALID_INPUT`, `NOT_FOUND`, `INVALID_TRANSITION` and
+  `PAYMENT_NOT_SETTLED`; `ForbiddenError` for actors who may not manage
+  orders.
+- Email delivery can never decide whether the transition succeeds.
+
+### Templates
+
+- **Confirmation** (subject `Orderbekräftelse HC-10001`):
+  - wordmark, greeting by full name;
+  - "payment received, we email you when it ships" (it never claims the
+    order has shipped);
+  - order number and date (payment time, Stockholm);
+  - each line from `OrderItem` snapshots: name, quantity × unit price, line
+    total;
+  - subtotal, shipping ("Fri frakt" at 0), total, VAT contained;
+  - delivery address, carrier;
+  - customer service (reply-to `StoreSettings.contactEmail`, `mailto:` link,
+    `/kontakt`); footer with company name and org.nr when configured.
+- **Shipped** (subject `Din beställning HC-10001 har skickats`):
+  - "your order is on its way";
+  - carrier (PostNord only; "OTHER" is not named);
+  - tracking number only when present, shown as text with no tracking URL;
+  - items with quantities, delivery address, support.
+- **Review slot:** `orderShippedEmail(order, store, { review: { url } })`
+  renders a "Vad tyckte du?" section with a button. Milestone 11 supplies the
+  secure URL; until then no section is rendered.
+- **Markup:** nested presentation tables, inline styles, Arial/Helvetica,
+  max 600 px, black/white/grey, no images, scripts, classes or external CSS.
+  Every value is HTML-escaped. A plain-text part mirrors the content.
+- **Logo:** the official mark exists only as an SVG rendered through a CSS
+  mask, which Gmail and Outlook do not support. The emails use a
+  `HEAVYCARDS` text wordmark instead of a redrawn or rasterised logo. A PNG
+  export of the official mark can replace it later without other changes.
+- **No identifiers:** no internal IDs or Stripe identifiers appear in emails.
+
+### Environments
+
+The Milestone 6 modes are unchanged:
+
+- **Vercel production:** Resend, required.
+- **Elsewhere:** `console` by default.
+- **E2E:** `file`.
+- **DB tests:** an injected memory transport.
+
+Additions:
+
+- **Provider idempotency in every transport.** The `file` transport writes
+  one file per idempotency key and returns the first result for a repeated
+  key, like Resend; the memory transport does the same and also records
+  every call.
+- **Console output:** order emails carry `personalData: true`, so the
+  console transport logs only the masked recipient, the subject and the key,
+  even in development. Admin emails keep printing their link in
+  development.
+- **Env validation:**
+  - `RESEND_API_KEY` must look like `re_…`;
+  - `EMAIL_FROM` must be `address` or `Name <address>`;
+  - in Vercel production the sender domain must not be a placeholder
+    (`example.*`, `.invalid`, `.test`, `.local`, `resend.dev`);
+  - `EMAIL_TRANSPORT=resend` is refused when `NODE_ENV=test`, so an
+    automated test run can never email anyone, whatever `.env.local` says.
+- **Resend calls:** each has a 15-second timeout (the SDK has none). Resend
+  error messages are never stored or logged, only their name.
+
+### Scheduling
+
+`GET /api/cron/reconcile-checkouts` now coordinates two independent steps,
+each in its own error boundary:
+
+1. payment reconciliation (unchanged);
+2. emails: sweep, then due deliveries.
+
+- Payments run first, so orders they finalize are confirmed in the same run.
+  An email failure never affects payments, and the email step still runs
+  when payments are not configured or fail. The response adds an `emails`
+  summary.
+- On Vercel Hobby the cron is daily. Retries then depend on the
+  after-checkout and after-webhook triggers. During a long quiet period an
+  unknown outcome can outlive the 23-hour window and go to FAILED rather
+  than risk a duplicate.
+- On Pro, `*/15 * * * *` keeps the whole retry schedule automatic
+  (Milestone 15).
+
+### Logging and privacy
+
+- `[email]` log lines (via the shared `logSafe`, also used by `[payments]`
+  now) carry only:
+  - delivery and order IDs, kind, attempt, outcome;
+  - error and problem codes, and the Resend email ID on success.
+- They never carry the recipient, names, addresses, message content or keys.
+  A DB test captures all console output over successful, failing, retried,
+  shipped and conflicting sends and asserts this; it also checks the audit
+  metadata.
+- The outbox stores no message content and no recipient.
+
+### Testing
+
+- **Unit:**
+  - transports: Resend through a mocked `fetch` (idempotency header,
+    reply-to, classification of nine error kinds, network failure,
+    timeout; the API key and recipient never appear in errors), idempotent
+    file and memory transports, console redaction;
+  - templates: Swedish content, historic amounts, free shipping, the
+    optional address line, support and company details, no shipped claim
+    in the confirmation, escaping, email-safe markup, tracking only when
+    present, no fabricated tracking URL, the review slot, no IDs;
+  - delivery rules (keys, backoff, window, eligibility);
+  - the payment precondition for fulfillment;
+  - env rules.
+- **DB** (`tests/db/transactional-email.test.ts`, real PostgreSQL, signed
+  webhooks, fake Stripe):
+  - **Confirmation obligation:** one confirmation obligation per paid order
+    and none sent inside the webhook; duplicate, redelivered and concurrent
+    successes; reconciliation racing the webhook; no obligation when
+    finalization is refused; none for pending, expired or failed orders.
+  - **Delivery:** the recipient is the order's email; snapshots after a
+    product rename and price change; retryable failure and later success;
+    no provider call after SENT.
+  - **Provider failures:** an accepted-then-timed-out send deduplicated by
+    the key; a multi-failure outage; the 23-hour window; crash recovery
+    through the lapsed lease; max attempts; idempotency conflict.
+  - **Concurrency:** 11 concurrent dispatchers producing one call.
+  - **Refunds:** refunded before sending (cancelled) and partially refunded
+    (sent).
+  - **Orders paid before M10:** the sweep sends once, concurrent sweeps
+    create one row, confirmed, refunded and unpaid orders are skipped.
+  - **Shipping:** first SHIPPED (status, shippedAt, audit, obligation,
+    email with tracking), repeated and concurrent SHIPPED, tracking
+    correction, no tracking section, COMPLETED sends nothing, a mail failure
+    does not block shipping; invalid transitions, unpaid orders and bad
+    input; inactive administrators.
+  - **Cron and privacy:** an email outage during reconciliation, emails
+    without a payment gateway; log and audit privacy; schema constraints.
+- **Mutation checks during development:** each of these makes the named
+  tests fail:
+  - removing the lease condition: the race tests;
+  - removing the window check: the window test;
+  - removing the enqueue from `finalizePaid`: the obligation and dispatch
+    tests;
+  - removing the PENDING guard: the "never again once SENT" test.
+- **E2E** (`checkout` project): a real webhook (three deliveries), then
+  `after()` and the file outbox:
+  - one SENT delivery with one attempt, and one email to the Stripe
+    customer with the order number, product and address;
+  - visiting the confirmation page while unpaid creates nothing.
+
+  Shipping is not covered in the browser until the Milestone 12 UI exists.
+
+### Dependencies
+
+None added. `resend` 6.31.0 (Milestone 6) already supports
+`idempotencyKey` on `emails.send`.
+
+### Production Resend setup still required (Milestone 15)
+
+1. In Resend, add and verify the sending domain, e.g. `heavycards.se` or a
+   subdomain such as `mail.heavycards.se`. Add the SPF (MX/TXT) and DKIM
+   (TXT/CNAME) records Resend shows, and preferably a DMARC record
+   (`_dmarc`, start with `p=none`). Wait until Resend reports the domain as
+   verified.
+2. Create an API key with **Sending access** only, restricted to that
+   domain. Set it as `RESEND_API_KEY` in Vercel **Production** only. Use a
+   separate key, or none, for previews.
+3. Set `EMAIL_FROM` to an address on the verified domain, e.g.
+   `HeavyCards <order@heavycards.se>`. Production refuses placeholder
+   domains.
+4. Set `StoreSettings.contactEmail` to the real customer-service mailbox;
+   it is the reply-to address and is shown in every email.
+5. Send a test order in Stripe test mode on a preview with Resend
+   configured, and check rendering in Gmail (web and app), Outlook and
+   Apple Mail.
+6. Decide who watches `EMAIL_NEEDS_ATTENTION` audit entries until the
+   Milestone 12 order view shows them. To resend a FAILED email after
+   checking in the Resend dashboard that it was not delivered, set its row
+   back to `PENDING` with `next_attempt_at = now()` (a deliberate operator
+   action). An explicit resend feature is out of scope for V1.
+7. On a Vercel Pro plan, schedule the cron every 15 minutes.

@@ -8,6 +8,7 @@ import Stripe from "stripe";
 import type { PrismaClient } from "../src/generated/prisma/client";
 import { createPrismaClient } from "../src/lib/db/create-client";
 
+import { EMAIL_OUTBOX_DIR } from "./admin-helpers";
 import { E2E_STRIPE_STATE_DIR, E2E_WEBHOOK_SECRET } from "./storage-dir";
 
 /*
@@ -139,6 +140,7 @@ export async function removeCheckoutTestData(): Promise<void> {
     db.inventoryReservation.deleteMany({
       where: { orderId: { in: orderIds } },
     }),
+    db.emailDelivery.deleteMany({ where: { orderId: { in: orderIds } } }),
     db.orderItem.deleteMany({ where: { orderId: { in: orderIds } } }),
     db.order.deleteMany({ where: { id: { in: orderIds } } }),
     db.product.deleteMany({ where: { id: { in: productIds } } }),
@@ -239,4 +241,33 @@ export async function sendStripeEvent(
     },
     data: payload,
   });
+}
+
+// --- Transactional email (Milestone 10) -------------------------------------------
+
+export type OutboxEmail = {
+  id: string;
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+  idempotencyKey: string | null;
+};
+
+/**
+ * The email the test server's file transport wrote for an idempotency key
+ * (one file per key, like the provider's deduplication), or null.
+ */
+export async function outboxEmailFor(
+  idempotencyKey: string,
+): Promise<OutboxEmail | null> {
+  const file = join(
+    EMAIL_OUTBOX_DIR,
+    `key-${idempotencyKey.replaceAll(/[^A-Za-z0-9-]/g, "_")}.json`,
+  );
+  try {
+    return JSON.parse(await readFile(file, "utf8")) as OutboxEmail;
+  } catch {
+    return null;
+  }
 }

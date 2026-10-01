@@ -88,6 +88,22 @@ enum AdminRole {
   ADMIN
 }
 
+/// Transactional customer emails. Each order receives each kind at most once.
+enum EmailKind {
+  ORDER_CONFIRMATION
+  ORDER_SHIPPED
+}
+
+/// PENDING: due or awaiting a retry. SENT: accepted by the provider.
+/// FAILED: needs a person (never retried automatically). CANCELLED: no
+/// longer applicable (e.g. the order was fully refunded before sending).
+enum EmailDeliveryStatus {
+  PENDING
+  SENT
+  FAILED
+  CANCELLED
+}
+
 // ---------------------------------------------------------------------------
 // Catalog
 // ---------------------------------------------------------------------------
@@ -243,16 +259,18 @@ model Order {
   trackingNumber  String?          @map("tracking_number") @db.VarChar(100)
   shippedAt       DateTime?        @map("shipped_at") @db.Timestamptz(3)
 
-  // Idempotency markers: an email is sent only while its marker is NULL.
+  /// When the provider accepted the email, set together with the
+  /// EmailDelivery row becoming SENT (src/server/email/outbox.ts).
   confirmationEmailSentAt DateTime? @map("confirmation_email_sent_at") @db.Timestamptz(3)
   shippingEmailSentAt     DateTime? @map("shipping_email_sent_at") @db.Timestamptz(3)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  items        OrderItem[]
-  reservations InventoryReservation[]
-  reviewTokens ReviewToken[]
+  items           OrderItem[]
+  reservations    InventoryReservation[]
+  reviewTokens    ReviewToken[]
+  emailDeliveries EmailDelivery[]
 
   @@index([paymentStatus, fulfillmentStatus])
   @@index([paidAt])
@@ -330,6 +348,45 @@ model StripeEvent {
   createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   @@map("stripe_events")
+}
+
+/// Transactional email outbox. A row is the obligation to send one email
+/// about one order; it is inserted in the same transaction as the business
+/// change (paid, shipped) and delivered afterwards, outside any transaction,
+/// by src/server/email/outbox.ts. The unique (orderId, kind) makes "at most
+/// one confirmation and one shipping email per order" a database invariant.
+/// Holds no message content and no recipient: both are rendered from the
+/// order at send time.
+model EmailDelivery {
+  id                  String              @id @default(uuid(7)) @db.Uuid
+  orderId             String              @map("order_id") @db.Uuid
+  kind                EmailKind
+  status              EmailDeliveryStatus @default(PENDING)
+  /// Send attempts started (claims), including ones whose outcome is unknown.
+  attempts            Int                 @default(0)
+  /// A PENDING row is not attempted before this time (retry backoff).
+  nextAttemptAt       DateTime            @default(now()) @map("next_attempt_at") @db.Timestamptz(3)
+  /// Lease of the dispatcher currently sending. A lease that lapses without
+  /// a recorded result means that attempt's outcome is unknown (a crash).
+  lockedUntil         DateTime?           @map("locked_until") @db.Timestamptz(3)
+  lastAttemptAt       DateTime?           @map("last_attempt_at") @db.Timestamptz(3)
+  /// First attempt whose outcome is unknown (timeout, provider 5xx, crash).
+  /// Retries are only safe while the provider still honours the idempotency
+  /// key for it; after that the row needs a person.
+  outcomeUnknownSince DateTime?           @map("outcome_unknown_since") @db.Timestamptz(3)
+  /// Safe error/problem code only (e.g. rate_limit_exceeded), never a message.
+  lastError           String?             @map("last_error") @db.VarChar(100)
+  /// Resend email ID, for operational debugging. Never shown to customers.
+  providerMessageId   String?             @map("provider_message_id") @db.VarChar(255)
+  sentAt              DateTime?           @map("sent_at") @db.Timestamptz(3)
+  createdAt           DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@unique([orderId, kind])
+  @@index([status, nextAttemptAt])
+  @@map("email_deliveries")
 }
 
 // ---------------------------------------------------------------------------

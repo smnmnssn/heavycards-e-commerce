@@ -41,7 +41,7 @@ Versions are pinned exactly in `package.json`, and `package-lock.json` is commit
 | Validation | Zod 4                                                                                      |
 | Quality    | ESLint 9 (`eslint-config-next`), Prettier 3                                                |
 | Tests      | Vitest 5 (unit/domain/components), Playwright 1.63 + axe (E2E, desktop + mobile Chromium)  |
-| Auth/email | Better Auth 1.7.7 (admin authentication), Resend 6.31 (admin emails)                       |
+| Auth/email | Better Auth 1.7.7 (admin authentication), Resend 6.31 (admin and order emails)             |
 | Admin      | React Hook Form 7.89 with `@hookform/resolvers` 5.9 (shared Zod schemas)                   |
 | Images     | Vercel Blob 2.8 behind `src/lib/storage` (local files in development), sharp 0.35          |
 | Payments   | Stripe Hosted Checkout via `stripe` 23.0 (API version `2026-09-30.endive`)                 |
@@ -354,8 +354,8 @@ curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/reco
 
 ## Email
 
-Admin invitations and password resets are sent by email (order emails follow
-in Milestone 10). `EMAIL_TRANSPORT` selects delivery:
+Admin invitations, password resets and the customer order emails (order
+confirmation, shipped) are sent by email. `EMAIL_TRANSPORT` selects delivery:
 
 | Value     | Behaviour                                                                                                                                         |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -363,13 +363,43 @@ in Milestone 10). `EMAIL_TRANSPORT` selects delivery:
 | `resend`  | Real delivery via Resend. Default and required in Vercel production. Needs `RESEND_API_KEY` and `EMAIL_FROM`.                                     |
 | `file`    | Nothing is sent; messages are written as JSON to `EMAIL_OUTBOX_DIR`. Used by the E2E tests; refused on Vercel.                                    |
 
-Remaining Resend setup before production (Milestone 15):
+Order emails go through an outbox (`email_deliveries`): paying or shipping an
+order records the email in the same transaction, and it is sent afterwards,
+retried with backoff and protected by Resend idempotency keys
+(`order-confirmation/<order id>`, `order-shipped/<order id>`). Details:
+docs/architecture.md → Milestone 10.
 
-1. Verify the sending domain in Resend (SPF/DKIM DNS records).
-2. Create a sending-only API key and set `RESEND_API_KEY` in Vercel
-   (Production only).
+Development and tests never email customers:
+
+- With `console` (the local default), order emails are logged only as
+  masked recipient and subject; their content (personal data) is never
+  printed.
+- E2E runs use `file`; each order email lands in `.e2e-outbox/` as
+  `key-<idempotency key>.json`.
+- DB tests inject an in-memory transport.
+- `EMAIL_TRANSPORT=resend` is refused when `NODE_ENV=test`.
+
+To try real delivery locally, use a Resend test key with
+`EMAIL_FROM="HeavyCards <onboarding@resend.dev>"`. Resend's testing domain only
+delivers to your own Resend account address.
+
+Pending and retryable order emails are sent by the scheduled run:
+
+```bash
+curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/reconcile-checkouts
+```
+
+Remaining Resend setup before production (Milestone 15; the full checklist is
+in docs/architecture.md → Milestone 10):
+
+1. Verify the sending domain in Resend (SPF/DKIM DNS records, plus DMARC).
+2. Create a sending-only API key for that domain and set `RESEND_API_KEY` in
+   Vercel (Production only).
 3. Set `EMAIL_FROM` to an address on the verified domain, e.g.
-   `HeavyCards <admin@heavycards.se>`.
+   `HeavyCards <order@heavycards.se>`. Production refuses placeholder domains
+   (`example.com`, `.invalid`, `resend.dev` …).
+4. Set the store's contact email to the real customer-service mailbox (it is
+   the reply-to address of order emails).
 
 ## Admin access
 

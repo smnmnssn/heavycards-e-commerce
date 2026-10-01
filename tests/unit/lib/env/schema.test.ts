@@ -176,7 +176,7 @@ describe("parseServerEnv: email", () => {
   const resend = {
     EMAIL_TRANSPORT: "resend",
     RESEND_API_KEY: "re_test_key",
-    EMAIL_FROM: "HeavyCards <admin@example.com>",
+    EMAIL_FROM: "HeavyCards <order@heavycards.se>",
   };
 
   it("does not send real email by default outside Vercel production", () => {
@@ -422,5 +422,91 @@ describe("parseServerEnv: payments", () => {
         VERCEL_URL: "x.vercel.app",
       }),
     ).toThrow(/PAYMENT_GATEWAY: fake is for local test runs only/);
+  });
+});
+
+describe("parseServerEnv: transactional email sender (Milestone 10)", () => {
+  const production = {
+    NODE_ENV: "production",
+    VERCEL_ENV: "production",
+    APP_URL: "https://heavycards.se",
+    EMAIL_TRANSPORT: "resend",
+    RESEND_API_KEY: "re_live_key_123",
+    BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_test",
+    STRIPE_SECRET_KEY: "sk_live_unittest",
+    STRIPE_WEBHOOK_SECRET: "whsec_unittest",
+    CRON_SECRET: "cron-secret-unittest-0123",
+  };
+
+  it.each([
+    "order@heavycards.se",
+    "HeavyCards <order@heavycards.se>",
+    "HeavyCards Kundservice <kundservice@mail.heavycards.se>",
+  ])("accepts the sender %j in production", (from) => {
+    expect(parse({ ...production, EMAIL_FROM: from }).email).toMatchObject({
+      transport: "resend",
+      from,
+    });
+  });
+
+  it.each([
+    "HeavyCards <onboarding@resend.dev>",
+    "HeavyCards <order@example.com>",
+    "order@shop.example.org",
+    "HeavyCards <no-reply@heavycards.invalid>",
+    "admin@heavycards.test",
+  ])("refuses the placeholder sender %j in production", (from) => {
+    expect(() => parse({ ...production, EMAIL_FROM: from })).toThrow(
+      /EMAIL_FROM: must use HeavyCards' own domain/,
+    );
+  });
+
+  it("allows Resend's testing domain outside production (previews)", () => {
+    expect(
+      parse({
+        NODE_ENV: "production",
+        VERCEL_ENV: "preview",
+        VERCEL_URL: "heavycards-abc.vercel.app",
+        EMAIL_TRANSPORT: "resend",
+        RESEND_API_KEY: "re_test_key",
+        EMAIL_FROM: "HeavyCards <onboarding@resend.dev>",
+      }).email,
+    ).toMatchObject({ transport: "resend" });
+  });
+
+  it.each(["HeavyCards", "Heavy <cards>", "a@b", "<a@b.se"])(
+    "refuses a malformed EMAIL_FROM %j",
+    (from) => {
+      expect(() => parse({ EMAIL_FROM: from })).toThrow(/EMAIL_FROM/);
+    },
+  );
+
+  it("refuses a value that is not a Resend API key, without echoing it", () => {
+    expect(() =>
+      parse({ ...production, RESEND_API_KEY: "sk_secret_value_99" }),
+    ).toThrow(
+      expect.objectContaining({
+        message: expect.stringMatching(/RESEND_API_KEY: must be a Resend/),
+      }),
+    );
+    expect(() =>
+      parse({ ...production, RESEND_API_KEY: "sk_secret_value_99" }),
+    ).toThrow(
+      expect.objectContaining({
+        message: expect.not.stringContaining("sk_secret_value_99"),
+      }),
+    );
+  });
+
+  it("never sends real email from a test run (NODE_ENV=test)", () => {
+    expect(() =>
+      parse({
+        NODE_ENV: "test",
+        EMAIL_TRANSPORT: "resend",
+        RESEND_API_KEY: "re_real_key",
+        EMAIL_FROM: "HeavyCards <order@heavycards.se>",
+      }),
+    ).toThrow(/resend is refused when NODE_ENV=test/);
+    expect(parse({ NODE_ENV: "test" }).email.transport).toBe("console");
   });
 });

@@ -16,6 +16,7 @@ import {
   isPaidState,
   type CheckoutSessionState,
 } from "@/server/domain/payment";
+import { enqueueOrderEmail } from "@/server/email/outbox";
 
 import { logPayment } from "./log";
 
@@ -28,7 +29,8 @@ import { logPayment } from "./log";
  *
  * - paid → verifies amount and currency, validates the customer details,
  *   decrements stock by the reserved quantities, marks the reservations
- *   CONSUMED and the order PAID, exactly once;
+ *   CONSUMED and the order PAID, and records the order-confirmation email
+ *   obligation (sent after the commit by src/server/email), exactly once;
  * - expired → releases the reservations and marks the order EXPIRED;
  * - failed (delayed payment failed) → releases and marks it FAILED;
  * - processing / open → only records the payment's ID.
@@ -321,6 +323,10 @@ async function finalizePaid(
     ...sourceMetadata(context),
     ...(shortfalls.length > 0 && { stockShortfalls: shortfalls }),
   });
+  // The confirmation becomes due together with the payment, atomically: if
+  // this transaction rolls back, no email is owed; if it commits, the
+  // outbox delivers it later, outside this transaction.
+  await enqueueOrderEmail(tx, order.id, "ORDER_CONFIRMATION", context.now);
   if (shortfalls.length > 0) {
     logPayment("error", "stock below reserved quantity at payment", {
       orderId: order.id,

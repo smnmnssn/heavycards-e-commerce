@@ -8,9 +8,11 @@ migration:
 [20261001090000_admin_auth](../prisma/migrations/20261001090000_admin_auth/migration.sql)
 (Milestone 6) and
 [20261001120000_checkout_reservations](../prisma/migrations/20261001120000_checkout_reservations/migration.sql)
-(Milestone 8) and
+(Milestone 8),
 [20261002090000_payment_reconciliation](../prisma/migrations/20261002090000_payment_reconciliation/migration.sql)
-(Milestone 9).
+(Milestone 9) and
+[20261002120000_transactional_email](../prisma/migrations/20261002120000_transactional_email/migration.sql)
+(Milestone 10).
 
 This document explains the decisions behind the schema. Keep it in sync when
 the schema changes.
@@ -39,6 +41,7 @@ the schema changes.
 | `OrderItem`            | `order_items`            | Immutable purchase lines with name/SKU/price/VAT snapshots.           |
 | `InventoryReservation` | `inventory_reservations` | Units held for a pending checkout (provisional or awaiting payment).  |
 | `StripeEvent`          | `stripe_events`          | Processed webhook event IDs (idempotency).                            |
+| `EmailDelivery`        | `email_deliveries`       | Transactional email outbox: one row per order and email kind.         |
 | `Review`               | `reviews`                | Product reviews with moderation status and verified-purchase marker.  |
 | `ReviewToken`          | `review_tokens`          | Hashed secure review-link tokens.                                     |
 | `AdminUser`            | `admin_users`            | Individual administrator identities with roles (Better Auth `user`).  |
@@ -63,6 +66,8 @@ Enums:
 - `ReservationStatus`: ACTIVE, CONSUMED, RELEASED
 - `ReviewStatus`: PENDING, APPROVED, REJECTED
 - `AdminRole`: OWNER, ADMIN
+- `EmailKind`: ORDER_CONFIRMATION, ORDER_SHIPPED
+- `EmailDeliveryStatus`: PENDING, SENT, FAILED, CANCELLED
 
 ## Relationships and delete behavior
 
@@ -80,6 +85,7 @@ them has to be deliberate, and normal UI archives instead.
 | Review → Product                                  | **Restrict**        | Reviews are content tied to a real purchase.                                                          |
 | Review → OrderItem (optional, unique)             | **Restrict**        | Keeps verified-purchase evidence intact.                                                              |
 | ReviewToken → Order                               | **Restrict**        | Tokens are part of the order's history.                                                               |
+| EmailDelivery → Order                             | **Restrict**        | The record of what the customer was sent stays with the order.                                        |
 | AuditLog → AdminUser (optional)                   | **Restrict**        | Admins are deactivated (`isActive = false`), never deleted, so the audit trail stays attributable.    |
 | AdminSession / AdminAccount → AdminUser           | **Cascade**         | Auth state belongs to the identity. Admins are never deleted in practice, so this is only a fallback. |
 | AdminInvitation → AdminUser (inviter, acceptedBy) | **Restrict**        | Invitations are part of the audit trail.                                                              |
@@ -214,14 +220,41 @@ certificationNumber }`). Adding them is purely additive: orders, inventory,
 - `country` is fixed to `SE` by a CHECK constraint (Sweden only in V1).
 - Fulfillment transitions are defined in `src/server/domain/fulfillment.ts`:
   NEW → PROCESSING → SHIPPED → COMPLETED, plus NEW/PROCESSING → CANCELLED.
-  A CHECK constraint requires `shippedAt` for SHIPPED and COMPLETED.
-- Email idempotency: `confirmationEmailSentAt` / `shippingEmailSentAt` are set
-  when the email is sent, and an email is only sent while its marker is NULL.
-  Milestone 10 claims the marker atomically with
-  `UPDATE … WHERE shipping_email_sent_at IS NULL`. Milestone 9 sends
-  nothing: a paid order has `paymentStatus` PAID (or later refunded),
-  `paidAt`, the customer details and `confirmationEmailSentAt = NULL`,
-  which is exactly the work list for the order confirmation.
+  PROCESSING and SHIPPED also require a paid, not fully refunded order.
+  A CHECK constraint requires `shippedAt` for SHIPPED and COMPLETED. Since
+  Milestone 10 the only writer is `transitionFulfillment`
+  (`src/server/orders/fulfillment.ts`), which locks the order, audits the
+  change and, on the first SHIPPED, sets `shippedAt` and enqueues the
+  shipping email.
+- **Email markers.** `confirmationEmailSentAt` / `shippingEmailSentAt` record
+  when the provider accepted the email. They are set in the same
+  transaction that marks the order's `EmailDelivery` row SENT; the outbox
+  row, not the marker, is what prevents a second send (see below).
+
+## Transactional email outbox
+
+`email_deliveries` (Milestone 10) holds one row per order and email kind:
+the obligation to send it and its delivery state. Design and retry rules:
+docs/architecture.md → Milestone 10.
+
+- **Unique `(order_id, kind)`**: an order can never owe a second confirmation
+  or shipping email. Rows are inserted with `ON CONFLICT DO NOTHING` in the
+  same transaction as the state change (order PAID, first SHIPPED).
+- **No content and no recipient are stored.** The message is rendered from
+  the order's own snapshots, and sent to `orders.email`, at send time.
+- **Columns:** `status`; `attempts` (claims made); `next_attempt_at`
+  (backoff); `locked_until` (lease of the dispatcher sending it);
+  `last_attempt_at`; `outcome_unknown_since` (first attempt that may have
+  been accepted; retries are allowed for 23 hours after it, inside Resend's
+  24-hour idempotency window); `last_error` (a provider error name or
+  problem code, never a message); `provider_message_id` (Resend email ID,
+  for debugging; never shown to customers); `sent_at`.
+- **CHECK constraints:** `attempts ≥ 0`; SENT exactly when `sent_at` is set;
+  a lease only on PENDING rows; a provider ID only on SENT rows.
+- Index `(status, next_attempt_at)` serves the due-row query.
+- Paid orders from before Milestone 10 have no row; the scheduled sweep
+  creates one for PAID/PARTIALLY_REFUNDED orders whose
+  `confirmation_email_sent_at` is NULL. The migration backfills nothing.
 
 ## Public order numbers
 
@@ -409,6 +442,13 @@ UPDATE`) before checking that another active OWNER remains, so concurrent
     (once per order and problem: amount or currency mismatch, missing
     customer data, payment for an already closed checkout, unexpected session
     state). Expired checkouts are not audited.
+  - orders, by administrators (Milestone 10 service, UI in Milestone 12):
+    `UPDATE_ORDER_STATUS` (from, to; on SHIPPED also tracking number and
+    carrier) and `UPDATE_ORDER_TRACKING` (old and new tracking details on an
+    already shipped order).
+  - email (system entries): `EMAIL_NEEDS_ATTENTION` (email kind, problem
+    code, delivery ID, attempts) when automatic delivery stops; never the
+    recipient or message.
 
 ## Store settings
 

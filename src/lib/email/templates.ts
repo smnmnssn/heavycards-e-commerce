@@ -1,17 +1,10 @@
+import { escapeHtml } from "./html";
 import type { EmailMessage } from "./transport";
 
 /**
- * Minimal transactional templates for admin account emails. Order emails
- * arrive in Milestone 10 together with a fuller layout.
+ * Minimal templates for admin account emails. Customer order emails live in
+ * src/server/email/order-templates.ts.
  */
-
-const escapeHtml = (value: string) =>
-  value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
 
 const stockholmDateTime = new Intl.DateTimeFormat("sv-SE", {
   dateStyle: "long",

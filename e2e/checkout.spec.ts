@@ -10,6 +10,7 @@ import {
   reserveForSomeoneElse,
   expireAtStripe,
   failDelayedPaymentAtStripe,
+  outboxEmailFor,
   payAtStripe,
   sendStripeEvent,
   STRIPE_ADDRESS,
@@ -428,6 +429,7 @@ async function goToStripe(
 
 const confirmation = (sessionId: string) =>
   `/kassa/bekraftelse?session_id=${sessionId}`;
+const mainContent = (page: Page) => page.getByRole("main");
 const heading = (page: Page, name: string) =>
   page.getByRole("main").getByRole("heading", { level: 1, name });
 
@@ -493,6 +495,70 @@ test.describe("payment outcomes", () => {
     await page.goto(confirmation(sessionId));
     await expect(heading(page, "Tack för din beställning!")).toBeVisible();
     await expect(badge(page)).toHaveText("1");
+  });
+
+  test("a verified payment sends exactly one order confirmation email (Milestone 10)", async ({
+    page,
+  }) => {
+    const product = await createTestProduct({
+      stockOnHand: 3,
+      priceAmount: 29_900,
+    });
+    const sessionId = await goToStripe(page, [{ product, quantity: 1 }]);
+    const [pending] = await pendingOrdersFor(product.id);
+    const key = `order-confirmation/${pending!.id}`;
+
+    // Opening the confirmation page while unpaid owes no email.
+    await page.goto(confirmation(sessionId));
+    await expect(mainContent(page)).toContainText(
+      "Vi kontrollerar din betalning",
+    );
+    expect(
+      await checkoutDb().emailDelivery.count({
+        where: { orderId: pending!.id },
+      }),
+    ).toBe(0);
+
+    await payAtStripe(sessionId);
+    for (let i = 0; i < 3; i += 1) {
+      const response = await sendStripeEvent(
+        page.request,
+        "checkout.session.completed",
+        sessionId,
+      );
+      expect(response.status()).toBe(200);
+    }
+
+    // Delivered after the webhook response, by the outbox.
+    await expect
+      .poll(
+        async () =>
+          (
+            await checkoutDb().emailDelivery.findMany({
+              where: { orderId: pending!.id },
+            })
+          ).map(({ kind, status, attempts }) => ({ kind, status, attempts })),
+        { timeout: 10_000 },
+      )
+      .toEqual([{ kind: "ORDER_CONFIRMATION", status: "SENT", attempts: 1 }]);
+    const email = await outboxEmailFor(key);
+    expect(email).toMatchObject({
+      to: STRIPE_CUSTOMER.email,
+      subject: `Orderbekräftelse HC-${pending!.orderNumber}`,
+      idempotencyKey: key,
+    });
+    expect(email!.text).toContain(`Hej ${STRIPE_CUSTOMER.shippingName},`);
+    expect(email!.text).toContain(product.name);
+    expect(email!.text).toContain(STRIPE_ADDRESS.line1);
+    expect(email!.text).not.toContain(sessionId);
+    const order = await checkoutDb().order.findUniqueOrThrow({
+      where: { id: pending!.id },
+    });
+    expect(order.confirmationEmailSentAt).not.toBeNull();
+    // The customer's page never shows personal data, email or not.
+    await page.goto(confirmation(sessionId));
+    await expect(heading(page, "Tack för din beställning!")).toBeVisible();
+    await expect(mainContent(page)).not.toContainText(STRIPE_CUSTOMER.email);
   });
 
   test("only the purchased items are cleared; products added after starting checkout stay", async ({

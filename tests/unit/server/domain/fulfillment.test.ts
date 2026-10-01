@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import type { FulfillmentStatus } from "@/generated/prisma/enums";
+import type {
+  FulfillmentStatus,
+  PaymentStatus,
+} from "@/generated/prisma/enums";
 import {
   allowedFulfillmentTransitions,
   canTransitionFulfillment,
+  fulfillmentAllowedForPayment,
 } from "@/server/domain/fulfillment";
 
 describe("fulfillment transitions", () => {
@@ -31,5 +35,24 @@ describe("fulfillment transitions", () => {
   it("treats COMPLETED and CANCELLED as final", () => {
     expect(allowedFulfillmentTransitions("COMPLETED")).toEqual([]);
     expect(allowedFulfillmentTransitions("CANCELLED")).toEqual([]);
+  });
+});
+
+describe("payment precondition (Milestone 10)", () => {
+  it.each<[FulfillmentStatus, PaymentStatus, boolean]>([
+    ["PROCESSING", "PAID", true],
+    ["PROCESSING", "PARTIALLY_REFUNDED", true],
+    ["PROCESSING", "PENDING", false],
+    ["PROCESSING", "REFUNDED", false],
+    ["SHIPPED", "PAID", true],
+    ["SHIPPED", "PENDING", false],
+    ["SHIPPED", "FAILED", false],
+    ["SHIPPED", "EXPIRED", false],
+    ["SHIPPED", "REFUNDED", false],
+    ["COMPLETED", "REFUNDED", true],
+    ["CANCELLED", "PENDING", true],
+    ["CANCELLED", "REFUNDED", true],
+  ])("%s with payment %s: %s", (to, paymentStatus, allowed) => {
+    expect(fulfillmentAllowedForPayment(to, paymentStatus)).toBe(allowed);
   });
 });

@@ -99,28 +99,28 @@ Swedish characters are transliterated in slugs (å/ä → a, ö → o).
 
 ## Admin and API
 
-| Route                             | Purpose                                                                                                                              | Milestone |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | --------- |
-| `/admin/login`                    | Sign-in (public)                                                                                                                     | 6         |
-| `/admin/forgot-password`          | Request a password-reset link (public)                                                                                               | 6         |
-| `/admin/reset-password`           | Set a new password with `?token=` (public)                                                                                           | 6         |
-| `/admin/invite`                   | Accept an invitation with `?token=` (public)                                                                                         | 6         |
-| `/admin`                          | Dashboard (signed in)                                                                                                                | 6         |
-| `/admin/users`                    | Administrator management (OWNER only)                                                                                                | 6         |
-| `/admin/products`                 | Product list: search, filters, low stock (OWNER, ADMIN)                                                                              | 7         |
-| `/admin/products/new`             | Create a product                                                                                                                     | 7         |
-| `/admin/products/[id]`            | Edit a product: content, price, stock, status, images, SEO; delete only unused drafts                                                | 7         |
-| `/admin/categories`               | Category list; `/new` and `/[id]` create and edit (delete only when unused)                                                          | 7         |
-| `/admin/sets`                     | Pokémon-set list; `/new` and `/[id]` create and edit (delete only when unused)                                                       | 7         |
-| `/admin/**`                       | Further admin areas (signed in)                                                                                                      | 8+        |
-| `/api/auth/*`                     | Better Auth: sign-in, sign-out, get-session, password reset only; every other path is 404                                            | 6         |
-| `/api/health`                     | Health check                                                                                                                         | 1–2       |
-| `/api/cart`                       | POST: current data for cart product IDs (read-only); optional `attemptId` excludes that checkout attempt's own hold                  | 5, 8      |
-| `/api/checkout`                   | POST: start Stripe Checkout (same origin, rate-limited, validates and reserves; returns the Stripe URL)                              | 8         |
-| `/api/admin/products/[id]/images` | POST: upload one product image (same origin, signed-in OWNER/ADMIN, ≤ 4 MB)                                                          | 7         |
-| `/api/media/*`                    | GET: images stored by the local storage provider (development/E2E only; 404 otherwise)                                               | 7         |
-| `/api/stripe/webhook`             | POST: Stripe events, signature-verified on the raw body; finalizes payments, releases expired/failed checkouts, synchronizes refunds | 9         |
-| `/api/cron/reconcile-checkouts`   | GET: reconcile unresolved Stripe checkouts (Vercel Cron, `Authorization: Bearer CRON_SECRET`; 401 otherwise)                         | 9         |
+| Route                             | Purpose                                                                                                                                                                       | Milestone |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| `/admin/login`                    | Sign-in (public)                                                                                                                                                              | 6         |
+| `/admin/forgot-password`          | Request a password-reset link (public)                                                                                                                                        | 6         |
+| `/admin/reset-password`           | Set a new password with `?token=` (public)                                                                                                                                    | 6         |
+| `/admin/invite`                   | Accept an invitation with `?token=` (public)                                                                                                                                  | 6         |
+| `/admin`                          | Dashboard (signed in)                                                                                                                                                         | 6         |
+| `/admin/users`                    | Administrator management (OWNER only)                                                                                                                                         | 6         |
+| `/admin/products`                 | Product list: search, filters, low stock (OWNER, ADMIN)                                                                                                                       | 7         |
+| `/admin/products/new`             | Create a product                                                                                                                                                              | 7         |
+| `/admin/products/[id]`            | Edit a product: content, price, stock, status, images, SEO; delete only unused drafts                                                                                         | 7         |
+| `/admin/categories`               | Category list; `/new` and `/[id]` create and edit (delete only when unused)                                                                                                   | 7         |
+| `/admin/sets`                     | Pokémon-set list; `/new` and `/[id]` create and edit (delete only when unused)                                                                                                | 7         |
+| `/admin/**`                       | Further admin areas (signed in)                                                                                                                                               | 8+        |
+| `/api/auth/*`                     | Better Auth: sign-in, sign-out, get-session, password reset only; every other path is 404                                                                                     | 6         |
+| `/api/health`                     | Health check                                                                                                                                                                  | 1–2       |
+| `/api/cart`                       | POST: current data for cart product IDs (read-only); optional `attemptId` excludes that checkout attempt's own hold                                                           | 5, 8      |
+| `/api/checkout`                   | POST: start Stripe Checkout (same origin, rate-limited, validates and reserves; returns the Stripe URL)                                                                       | 8         |
+| `/api/admin/products/[id]/images` | POST: upload one product image (same origin, signed-in OWNER/ADMIN, ≤ 4 MB)                                                                                                   | 7         |
+| `/api/media/*`                    | GET: images stored by the local storage provider (development/E2E only; 404 otherwise)                                                                                        | 7         |
+| `/api/stripe/webhook`             | POST: Stripe events, signature-verified on the raw body; finalizes payments, releases expired/failed checkouts, synchronizes refunds                                          | 9         |
+| `/api/cron/reconcile-checkouts`   | GET: reconcile unresolved Stripe checkouts, then send pending and retryable order emails as a separate step (Vercel Cron, `Authorization: Bearer CRON_SECRET`; 401 otherwise) | 9, 10     |
 
 `/admin/**`, `/kassa/**` and `/api/**` send `X-Robots-Tag: noindex, nofollow`
 (next.config.ts); `/kassa/**` also sends `Referrer-Policy: no-referrer`

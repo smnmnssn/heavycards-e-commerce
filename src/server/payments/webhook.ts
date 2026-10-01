@@ -56,6 +56,11 @@ export type WebhookDeps = Omit<PaymentDeps, "gateway"> & {
   webhookSecret: string | null;
   /** Revalidates storefront pages for products whose availability changed. */
   revalidate?: (productSlugs: string[]) => void;
+  /**
+   * Sends the order's due emails (its confirmation, once paid) after the
+   * response, so Stripe never waits for the mail provider.
+   */
+  sendOrderEmails?: (orderId: string) => void;
 };
 
 const json = (body: unknown, status = 200) =>
@@ -106,6 +111,9 @@ export async function handleStripeWebhook(
 
     const result = await dispatch(paymentDeps, event);
     if (result.productSlugs.length > 0) deps.revalidate?.(result.productSlugs);
+    if (result.outcome === "paid" && result.orderId) {
+      deps.sendOrderEmails?.(result.orderId);
+    }
     logPayment(
       result.outcome === "needs_attention" ? "error" : "info",
       "webhook processed",

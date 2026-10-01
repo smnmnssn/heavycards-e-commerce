@@ -60,3 +60,10 @@ export const isOwner = (admin: AdminIdentity) => admin.role === "OWNER";
  */
 export const canManageCatalog = (admin: { role: AdminRole }) =>
   admin.role === "OWNER" || admin.role === "ADMIN";
+
+/**
+ * Order management (fulfillment status, tracking) is open to both roles
+ * (PROJECT.md §50: ADMIN can manage orders).
+ */
+export const canManageOrders = (admin: { role: AdminRole }) =>
+  admin.role === "OWNER" || admin.role === "ADMIN";

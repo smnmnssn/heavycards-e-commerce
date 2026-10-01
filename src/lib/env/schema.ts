@@ -41,8 +41,15 @@ const rawServerEnvSchema = z.object({
     .string({ error: "required" })
     .min(32, "must be at least 32 characters (e.g. openssl rand -base64 32)"),
   EMAIL_TRANSPORT: optionalNonEmpty(z.enum(["resend", "console", "file"])),
-  RESEND_API_KEY: optionalNonEmpty(z.string()),
-  EMAIL_FROM: optionalNonEmpty(z.string()),
+  RESEND_API_KEY: optionalNonEmpty(
+    z.string().regex(/^re_\S+$/, "must be a Resend API key (re_…)"),
+  ),
+  EMAIL_FROM: optionalNonEmpty(
+    z.string().refine((value) => parseSender(value) !== null, {
+      message:
+        'must be an email address or "Name <address>", e.g. "HeavyCards <order@heavycards.se>"',
+    }),
+  ),
   EMAIL_OUTBOX_DIR: optionalNonEmpty(z.string()),
   STORAGE_PROVIDER: optionalNonEmpty(z.enum(["vercel-blob", "local"])),
   BLOB_READ_WRITE_TOKEN: optionalNonEmpty(z.string()),
@@ -123,6 +130,23 @@ export type PaymentConfig = Readonly<
 
 const PLACEHOLDER_SENDER = "HeavyCards <no-reply@heavycards.invalid>";
 
+/** `a@b.se` or `Name <a@b.se>` → the address's domain; null if malformed. */
+export function parseSender(value: string): { domain: string } | null {
+  const match = /^\s*(?:[^<>]*?\s*<([^<>\s]+)>|([^<>\s]+))\s*$/.exec(value);
+  const address = match?.[1] ?? match?.[2];
+  if (!address || !z.email().safeParse(address).success) return null;
+  return { domain: address.slice(address.lastIndexOf("@") + 1).toLowerCase() };
+}
+
+/**
+ * Domains that can never be HeavyCards' verified production sender:
+ * reserved test/example domains and Resend's shared testing domain.
+ */
+const isPlaceholderSenderDomain = (domain: string) =>
+  domain === "resend.dev" ||
+  /(^|\.)example\.(com|net|org)$/.test(domain) ||
+  /\.(invalid|test|example|localhost|local)$/.test(domain);
+
 export type ServerEnv = Readonly<{
   nodeEnv: "development" | "test" | "production";
   vercelEnv: "development" | "preview" | "production" | undefined;
@@ -201,9 +225,24 @@ function resolveEmail(
     );
   }
   if (transport === "resend") {
+    // Automated test runs must never reach real customers, whatever a
+    // developer's .env.local says.
+    if (env.NODE_ENV === "test") {
+      return new Error(
+        "EMAIL_TRANSPORT: resend is refused when NODE_ENV=test; tests use the console, file or memory transport",
+      );
+    }
     if (!env.RESEND_API_KEY || !env.EMAIL_FROM) {
       return new Error(
         "RESEND_API_KEY and EMAIL_FROM: required when email is sent through Resend",
+      );
+    }
+    if (
+      isVercelProduction &&
+      isPlaceholderSenderDomain(parseSender(env.EMAIL_FROM)!.domain)
+    ) {
+      return new Error(
+        "EMAIL_FROM: must use HeavyCards' own domain verified in Resend in the Vercel production environment",
       );
     }
     return {
