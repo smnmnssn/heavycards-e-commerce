@@ -269,7 +269,8 @@ model Order {
 
   items           OrderItem[]
   reservations    InventoryReservation[]
-  reviewTokens    ReviewToken[]
+  /// Review invitation, created when the order is first shipped.
+  reviewToken     ReviewToken?
   emailDeliveries EmailDelivery[]
 
   @@index([paymentStatus, fulfillmentStatus])
@@ -418,12 +419,22 @@ model Review {
   @@map("reviews")
 }
 
-/// Secure review link for a paid order. Only the SHA-256 hash of the random
-/// token is stored; the raw token exists only in the emailed URL.
+/// Review invitation of a shipped order: the secure link in the shipping
+/// email. Created in the transaction that first marks the order SHIPPED;
+/// at most one per order. It authorizes one review per line of that order
+/// (the Review row, unique per OrderItem, is the consumed entitlement).
+///
+/// The raw token is never stored. It is HMAC(server key, nonce): the server
+/// key is derived from AUTH_SECRET, so the database alone (nonce and hash)
+/// cannot produce a working link, while every email retry re-derives the
+/// identical URL. See src/server/domain/review-token.ts.
 model ReviewToken {
   id        String    @id @default(uuid(7)) @db.Uuid
-  orderId   String    @map("order_id") @db.Uuid
-  /// Lowercase hex SHA-256 of the raw token.
+  orderId   String    @unique @map("order_id") @db.Uuid
+  /// Random 256-bit input (base64url) of the token derivation. Useless
+  /// without the server key.
+  nonce     String    @db.Char(43)
+  /// Lowercase hex SHA-256 of the raw token; lookups go through it.
   tokenHash String    @unique @map("token_hash") @db.Char(64)
   expiresAt DateTime  @map("expires_at") @db.Timestamptz(3)
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
@@ -431,7 +442,6 @@ model ReviewToken {
 
   order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
 
-  @@index([orderId])
   @@map("review_tokens")
 }
 

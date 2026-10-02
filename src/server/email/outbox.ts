@@ -16,12 +16,15 @@ import {
   providerWindowExpired,
   SEND_LEASE_MS,
 } from "@/server/domain/email-delivery";
+import type { ReviewLinkKey } from "@/server/domain/review-token";
+import { reviewLinkFor } from "@/server/reviews/invitations";
 
 import { logEmail } from "./log";
 import {
   orderConfirmationEmail,
   orderShippedEmail,
   type OrderEmailData,
+  type ShippedEmailOptions,
 } from "./order-templates";
 
 /*
@@ -56,6 +59,8 @@ export type EmailDeps = {
   transport: EmailTransport;
   /** Public origin for links in emails. */
   siteUrl: string;
+  /** Re-derives the review link of shipping emails (never stored). */
+  reviewLinkKey: ReviewLinkKey;
   now?: () => Date;
 };
 
@@ -241,6 +246,14 @@ async function prepareMessage(
       trackingNumber: true,
       confirmationEmailSentAt: true,
       shippingEmailSentAt: true,
+      reviewToken: {
+        select: {
+          nonce: true,
+          tokenHash: true,
+          expiresAt: true,
+          revokedAt: true,
+        },
+      },
       items: {
         select: {
           productNameSnapshot: true,
@@ -316,8 +329,42 @@ async function prepareMessage(
     message:
       claimed.kind === "ORDER_CONFIRMATION"
         ? orderConfirmationEmail(data, storeInfo)
-        : orderShippedEmail(data, storeInfo),
+        : orderShippedEmail(
+            data,
+            storeInfo,
+            shippedEmailOptions(deps, claimed, order.reviewToken),
+          ),
   };
+}
+
+/**
+ * The review section of a shipping email. The URL is re-derived from the
+ * stored invitation on every render, so a retry sends the identical
+ * message (same idempotency key, same payload) and never a new link. Orders
+ * shipped before Milestone 11 have no invitation and get no section.
+ */
+function shippedEmailOptions(
+  deps: EmailDeps,
+  claimed: Claim,
+  invitation: Parameters<typeof reviewLinkFor>[0] | null,
+): ShippedEmailOptions {
+  if (!invitation) return {};
+  const link = reviewLinkFor(invitation, {
+    reviewLinkKey: deps.reviewLinkKey,
+    siteUrl: deps.siteUrl,
+    now: (deps.now ?? (() => new Date()))(),
+  });
+  if (link.ok) return { review: { url: link.url } };
+  if (link.reason === "key_mismatch") {
+    // AUTH_SECRET changed after shipping: the stored hash cannot be matched
+    // any more, so the email goes out without a (non-working) link.
+    logEmail("error", "review link unavailable", {
+      deliveryId: claimed.id,
+      orderId: claimed.orderId,
+      problem: "review_link_key_mismatch",
+    });
+  }
+  return {};
 }
 
 /** Only the holder of the current attempt may record its result. */

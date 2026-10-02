@@ -34,6 +34,7 @@ import { transitionFulfillment } from "@/server/orders/fulfillment";
 import { handleReconcileRequest } from "@/server/payments/cron";
 import { syncCheckoutSession } from "@/server/payments/session-sync";
 import { handleStripeWebhook } from "@/server/payments/webhook";
+import { deriveReviewLinkKey } from "@/server/domain/review-token";
 
 import { createAdmin } from "./auth-helpers";
 import { createProduct, paidCustomerDetails } from "./factories";
@@ -50,6 +51,7 @@ import { createTestDb, resetDatabase } from "./test-database";
 const db = createTestDb();
 const SECRET = "whsec_dbtest_signing_secret";
 const SITE = "https://heavycards.se";
+const REVIEW_KEY = deriveReviewLinkKey("db-test-auth-secret-0123456789abcdef");
 const MINUTE_MS = 60_000;
 const DAY_MS = 24 * 60 * MINUTE_MS;
 
@@ -87,6 +89,7 @@ const emailDeps = (transport: EmailTransport = mail): EmailDeps => ({
   db,
   transport,
   siteUrl: SITE,
+  reviewLinkKey: REVIEW_KEY,
   now: () => now,
 });
 
@@ -691,6 +694,7 @@ describe("shipping email", () => {
     mail.calls.length = 0;
     mail.messages.length = 0;
     const result = await transitionFulfillment(db, {
+      reviewLinkKey: REVIEW_KEY,
       actorId: admin.id,
       input: { orderId, to: "PROCESSING" },
       now,
@@ -701,6 +705,7 @@ describe("shipping email", () => {
 
   const ship = (actorId: string, orderId: string, extra: object = {}) =>
     transitionFulfillment(db, {
+      reviewLinkKey: REVIEW_KEY,
       actorId,
       input: { orderId, to: "SHIPPED", ...extra },
       now,
@@ -752,7 +757,10 @@ describe("shipping email", () => {
     expect(message.subject).toMatch(/^Din beställning HC-\d+ har skickats$/);
     expect(message.text).toContain("Spårningsnummer: RR123456789SE");
     expect(message.text).toContain("Fraktbolag: PostNord");
-    expect(message.text).not.toMatch(/recens/i);
+    // Milestone 11: the order's review invitation (tests/db/reviews.test.ts).
+    expect(message.text).toMatch(
+      /Recensera ditt köp: https:\/\/heavycards\.se\/review\/[\w-]{43}\n/,
+    );
     expect((await order(orderId)).shippingEmailSentAt).toEqual(now);
   });
 
@@ -824,6 +832,7 @@ describe("shipping email", () => {
     await processDueEmails(emailDeps());
 
     const completed = await transitionFulfillment(db, {
+      reviewLinkKey: REVIEW_KEY,
       actorId: admin.id,
       input: { orderId, to: "COMPLETED" },
       now,
@@ -865,6 +874,7 @@ describe("shipping email", () => {
     });
     expect(
       await transitionFulfillment(db, {
+        reviewLinkKey: REVIEW_KEY,
         actorId: admin.id,
         input: { orderId: pending.orderId, to: "PROCESSING" },
       }),
@@ -875,18 +885,21 @@ describe("shipping email", () => {
     });
     expect(
       await transitionFulfillment(db, {
+        reviewLinkKey: REVIEW_KEY,
         actorId: admin.id,
         input: { orderId: randomUUID(), to: "PROCESSING" },
       }),
     ).toEqual({ ok: false, error: "NOT_FOUND" });
     expect(
       await transitionFulfillment(db, {
+        reviewLinkKey: REVIEW_KEY,
         actorId: admin.id,
         input: { orderId, to: "SHIPPED", trackingNumber: "<script>" },
       }),
     ).toMatchObject({ ok: false, error: "INVALID_INPUT" });
     expect(
       await transitionFulfillment(db, {
+        reviewLinkKey: REVIEW_KEY,
         actorId: admin.id,
         input: { orderId, to: "NEW" },
       }),
@@ -904,6 +917,7 @@ describe("shipping email", () => {
 
     await expect(
       transitionFulfillment(db, {
+        reviewLinkKey: REVIEW_KEY,
         actorId: inactive.id,
         input: { orderId, to: "PROCESSING" },
       }),
@@ -998,11 +1012,13 @@ describe("logging and audit privacy", () => {
     later(RETRY_DELAYS_MS[1]!);
     await processDueEmails(emailDeps());
     await transitionFulfillment(db, {
+      reviewLinkKey: REVIEW_KEY,
       actorId: admin.id,
       input: { orderId, to: "PROCESSING" },
       now,
     });
     await transitionFulfillment(db, {
+      reviewLinkKey: REVIEW_KEY,
       actorId: admin.id,
       input: { orderId, to: "SHIPPED", trackingNumber: "RR1SE" },
       now,

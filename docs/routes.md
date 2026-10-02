@@ -7,7 +7,7 @@ since published URLs need permanent redirects once live.
 
 ## Storefront
 
-All storefront routes below exist as of Milestone 4 (except `/review/[token]`).
+All storefront routes below exist as of Milestone 4; `/review/[token]` since Milestone 11.
 
 | Route                        | Page                                                                                                                                                                  | Rendering | Indexable                |
 | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ------------------------ |
@@ -19,7 +19,7 @@ All storefront routes below exist as of Milestone 4 (except `/review/[token]`).
 | `/nyheter`                   | ACTIVE products published in the last 60 days                                                                                                                         | dynamic   | yes                      |
 | `/kommande`                  | COMING_SOON, preorders and future release dates                                                                                                                       | dynamic   | yes                      |
 | `/sok?q=…`                   | Search results                                                                                                                                                        | dynamic   | no                       |
-| `/review/[token]`            | Secure review page (Milestone 11)                                                                                                                                     | —         | no                       |
+| `/review/[token]`            | Secure review page from the shipping email: the order's purchased products with one review form each; one generic page for every unusable link; rate-limited          | dynamic   | no                       |
 | `/kassa/bekraftelse`         | Stripe success URL: payment state from the database only (processing, paid with products and total, expired, failed); clears this browser's purchased items once paid | dynamic   | no                       |
 | `/kassa/avbruten`            | Stripe cancel URL: cart kept, "Visa kundvagnen"                                                                                                                       | ISR 60 s  | no                       |
 
@@ -127,7 +127,8 @@ Swedish characters are transliterated in slugs (å/ä → a, ö → o).
 because the success URL carries the Stripe session ID. The `/kassa` pages are
 not linked from navigation or the sitemap.
 `/admin/**` also sends `Referrer-Policy: no-referrer`, because invitation and
-reset links carry tokens in the query string. `src/proxy.ts` redirects
+reset links carry tokens in the query string. `/review/**` sends both
+headers too (the path is a review token), and is never in the sitemap. `src/proxy.ts` redirects
 requests without a session cookie to `/admin/login`; it is a convenience only,
 and every admin page and action authorizes itself on the server.
 

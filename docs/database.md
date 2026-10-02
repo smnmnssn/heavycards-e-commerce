@@ -6,13 +6,15 @@ PostgreSQL via Prisma ORM 7. The source of truth is
 migration:
 [20260930205053_init](../prisma/migrations/20260930205053_init/migration.sql),
 [20261001090000_admin_auth](../prisma/migrations/20261001090000_admin_auth/migration.sql)
-(Milestone 6) and
+(Milestone 6),
 [20261001120000_checkout_reservations](../prisma/migrations/20261001120000_checkout_reservations/migration.sql)
 (Milestone 8),
 [20261002090000_payment_reconciliation](../prisma/migrations/20261002090000_payment_reconciliation/migration.sql)
-(Milestone 9) and
+(Milestone 9),
 [20261002120000_transactional_email](../prisma/migrations/20261002120000_transactional_email/migration.sql)
-(Milestone 10).
+(Milestone 10) and
+[20261002150000_review_invitations](../prisma/migrations/20261002150000_review_invitations/migration.sql)
+(Milestone 11).
 
 This document explains the decisions behind the schema. Keep it in sync when
 the schema changes.
@@ -43,7 +45,7 @@ the schema changes.
 | `StripeEvent`          | `stripe_events`          | Processed webhook event IDs (idempotency).                            |
 | `EmailDelivery`        | `email_deliveries`       | Transactional email outbox: one row per order and email kind.         |
 | `Review`               | `reviews`                | Product reviews with moderation status and verified-purchase marker.  |
-| `ReviewToken`          | `review_tokens`          | Hashed secure review-link tokens.                                     |
+| `ReviewToken`          | `review_tokens`          | Review invitation of a shipped order (nonce + token hash, one/order). |
 | `AdminUser`            | `admin_users`            | Individual administrator identities with roles (Better Auth `user`).  |
 | `AdminSession`         | `admin_sessions`         | Better Auth sessions (opaque token in the signed cookie).             |
 | `AdminAccount`         | `admin_accounts`         | Better Auth credential accounts: the only password store.             |
@@ -84,7 +86,7 @@ them has to be deliberate, and normal UI archives instead.
 | InventoryReservation → Order / Product            | **Restrict**        | Reservation history stays attached to its checkout.                                                   |
 | Review → Product                                  | **Restrict**        | Reviews are content tied to a real purchase.                                                          |
 | Review → OrderItem (optional, unique)             | **Restrict**        | Keeps verified-purchase evidence intact.                                                              |
-| ReviewToken → Order                               | **Restrict**        | Tokens are part of the order's history.                                                               |
+| ReviewToken → Order (unique)                      | **Restrict**        | The invitation is part of the order's history.                                                        |
 | EmailDelivery → Order                             | **Restrict**        | The record of what the customer was sent stays with the order.                                        |
 | AuditLog → AdminUser (optional)                   | **Restrict**        | Admins are deactivated (`isActive = false`), never deleted, so the audit trail stays attributable.    |
 | AdminSession / AdminAccount → AdminUser           | **Cascade**         | Auth state belongs to the identity. Admins are never deleted in practice, so this is only a fallback. |
@@ -358,24 +360,37 @@ holding = status = ACTIVE AND (awaiting_payment OR expires_at > now)
 
 ## Reviews and review tokens
 
+Design and flows: docs/architecture.md → Milestone 11.
+
 - `Review.orderItemId` is unique, so each purchased product on an order can be
   reviewed at most once. Because order lines are unique per (order, product),
-  buying 3 of the same product still allows exactly one review.
+  buying 3 of the same product still allows exactly one review. **The review
+  row is the consumed entitlement**: inserting it is the atomic consumption,
+  and the unique index settles concurrent submissions.
 - CHECK: `verifiedPurchase = true` requires `orderItemId`. The flag is only ever
-  set server-side from a paid order. Checking that `review.productId` matches
-  `orderItem.productId` is the review service's job (Milestone 11), not a
-  database constraint.
-- Rating is 1–5 (CHECK). New reviews default to PENDING. Only APPROVED reviews
-  are public or count toward aggregates.
-- **Review tokens:**
-  - 256-bit random, base64url-encoded (`src/lib/security/tokens.ts`).
-  - Only the lowercase hex **SHA-256** hash is stored (`CHAR(64)` with a format
-    CHECK). A fast hash is appropriate because the token has full entropy,
-    unlike a password.
-  - Lookup is by hash via a unique index.
-  - Tokens expire **180 days** after issue (`REVIEW_TOKEN_TTL_DAYS`) and can be
-    revoked early (`revokedAt`). An order may have several tokens, e.g. after a
-    resend.
+  set server-side. `review.productId` is copied from the order line by the
+  submission service (`src/server/reviews/submit.ts`), never taken from the
+  request; it is not a database constraint.
+- Rating is 1–5 (CHECK). New reviews are PENDING. Only APPROVED reviews are
+  public or count toward aggregates. `displayName` is what the customer typed
+  or "Verifierad kund"; it is never derived from the order.
+- **Review invitations (`review_tokens`, Milestone 11):**
+  - One row per shipped order (unique `order_id`), inserted in the
+    transaction that first marks the order SHIPPED. It authorizes the lines
+    of that order only.
+  - The raw token is **not stored**. `nonce` (`CHAR(43)`, 256 random bits,
+    format CHECK) and the server key derive it: `HMAC-SHA256(key, nonce)`,
+    with the key derived from `AUTH_SECRET`. So the shipping email can be
+    re-rendered identically on retries, while a database copy alone yields
+    no working link.
+  - `token_hash` is the lowercase hex **SHA-256** of the raw token (`CHAR(64)`
+    with a format CHECK, unique). Lookups go through it. A fast hash is
+    appropriate because the token has full entropy, unlike a password. Neither
+    the hash nor the nonce works as a URL token.
+  - Valid **180 days** from shipping (`REVIEW_TOKEN_TTL_DAYS`); CHECKs keep
+    `expires_at > created_at` and `revoked_at ≥ created_at`. `revoked_at` is
+    for staff use later; no V1 code path revokes.
+  - Orders shipped before Milestone 11 have no row (nothing is backfilled).
 
 ## Administrators and audit
 
@@ -470,8 +485,8 @@ UPDATE`) before checking that another active OWNER remains, so concurrent
 ## Rate limits
 
 `rate_limit_buckets` holds fixed-window counters for public endpoints that
-need abuse protection; today only checkout creation (15 requests per client
-per 10 minutes). The primary key is `(key, window_start)`; one atomic
+need abuse protection: checkout creation (15 requests per client per 10
+minutes), review pages (60) and review submissions (20). The primary key is `(key, window_start)`; one atomic
 `INSERT … ON CONFLICT DO UPDATE … RETURNING count` per request. `key` is
 `<scope>:<HMAC-SHA-256 of the client IP>` (keyed with `AUTH_SECRET`), so no
 raw IP address is stored. Windows older than a day are deleted after checkout

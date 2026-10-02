@@ -66,8 +66,8 @@ export type EmailStoreInfo = {
 
 /**
  * The optional "review your purchase" section of the shipping email. Its URL
- * is a secure, single-order review link created by Milestone 11; until then
- * no section is rendered.
+ * is the order's secure review link (src/server/reviews/invitations.ts);
+ * without one (orders shipped before Milestone 11) no section is rendered.
  */
 export type ShippedEmailOptions = { review?: { url: string } };
 

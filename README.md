@@ -167,6 +167,15 @@ gateway keeps its sessions as JSON files in `.e2e-stripe/`
 correctly signed event to `/api/stripe/webhook` with the local-only secret in
 `e2e/storage-dir.ts`.
 
+The review tests (`e2e/reviews.spec.ts`) run after checkout, as the `reviews`
+project. They create `REV-E2E-` products with paid orders, ship them through
+the real fulfillment service and outbox (`e2e/support/review-actions.ts`, run
+with tsx; the admin order screens arrive in Milestone 12), follow the review
+link from the shipping email in `.e2e-outbox/`, and delete everything again.
+The moderation test waits up to the product page's 60-second cache window,
+because its staff action runs outside the web server. To run only them:
+`npx playwright test --project reviews --no-deps`.
+
 CI (`.github/workflows/ci.yml`) runs on every push to `main` and on pull requests:
 
 - `npm ci`, format check, lint, typecheck and unit tests;
@@ -368,6 +377,11 @@ order records the email in the same transaction, and it is sent afterwards,
 retried with backoff and protected by Resend idempotency keys
 (`order-confirmation/<order id>`, `order-shipped/<order id>`). Details:
 docs/architecture.md → Milestone 10.
+
+The shipping email contains the order's secure review link
+(`/review/<token>`, valid 180 days, one review per purchased product). The
+token is never stored; it is re-derived from `AUTH_SECRET` for every send, so
+retries carry the same link. Details: docs/architecture.md → Milestone 11.
 
 Development and tests never email customers:
 

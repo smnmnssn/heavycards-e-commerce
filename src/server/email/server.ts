@@ -5,6 +5,7 @@ import { after } from "next/server";
 import { db } from "@/lib/db/client";
 import { emailTransport } from "@/lib/email/server";
 import { env } from "@/lib/env/server";
+import { reviewLinkKey } from "@/server/reviews/server";
 
 import { logEmail } from "./log";
 import { processDueEmails, type EmailDeps } from "./outbox";
@@ -14,6 +15,7 @@ export const emailDeps: EmailDeps = {
   db,
   transport: emailTransport,
   siteUrl: env.siteUrl,
+  reviewLinkKey,
 };
 
 /**

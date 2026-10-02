@@ -33,6 +33,10 @@ const adminHeaders = [
 // success URL is never sent onward as a Referer.
 const checkoutHeaders = adminHeaders;
 
+// Review pages: the path is a bearer token for the customer's order, so the
+// same applies (PROJECT.md §65).
+const reviewHeaders = adminHeaders;
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   images: {
@@ -58,6 +62,7 @@ const nextConfig: NextConfig = {
       { source: "/admin", headers: adminHeaders },
       { source: "/admin/:path*", headers: adminHeaders },
       { source: "/kassa/:path*", headers: checkoutHeaders },
+      { source: "/review/:path*", headers: reviewHeaders },
       { source: "/api/:path*", headers: noIndexHeaders },
     ];
   },

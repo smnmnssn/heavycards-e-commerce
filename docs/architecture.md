@@ -1883,3 +1883,259 @@ None added. `resend` 6.31.0 (Milestone 6) already supports
    back to `PENDING` with `next_attempt_at = now()` (a deliberate operator
    action). An explicit resend feature is out of scope for V1.
 7. On a Vercel Pro plan, schedule the cron every 15 minutes.
+
+## Milestone 11 — Verified purchase reviews (2026-10-02)
+
+Customers review what they bought through the link in the shipping email.
+Schema details are in [database.md](database.md), the route in
+[routes.md](routes.md). The admin review screens are Milestone 12; this
+milestone provides the moderation service they will call.
+
+### Layers
+
+| Layer                                                                | Module                                                                     |
+| -------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Token derivation, expiry, link path (pure, server-only)              | `src/server/domain/review-token.ts`                                        |
+| Review rules: moderation transitions, which orders allow reviews     | `src/server/domain/review.ts`                                              |
+| Input schema and text normalization (browser and server)             | `src/lib/validation/reviews.ts`                                            |
+| Invitations: create at SHIPPED, render the link, resolve a URL token | `src/server/reviews/invitations.ts`                                        |
+| Submission (the one write path for customer reviews)                 | `src/server/reviews/submit.ts`                                             |
+| Moderation service; wiring with revalidation and the review key      | `src/server/reviews/{moderation,server}.ts`                                |
+| Integration: first SHIPPED, shipping email                           | `src/server/orders/fulfillment.ts`, `src/server/email/outbox.ts`           |
+| Page, server action, form, star input                                | `src/app/(store)/review/[token]/*`, `src/components/store/review-form.tsx` |
+| Public display (Milestone 4 queries and components, unchanged)       | `getProductBySlug`, `ProductReviews`, product JSON-LD                      |
+
+### Invitation and entitlement model
+
+- **One invitation per shipped order** (the existing `ReviewToken` model,
+  now unique per order). It is the single link in the shipping email and
+  opens one page listing that order's purchased products, each with its own
+  form (PROJECT.md §46).
+- **One entitlement per order line.** Every line of a shipped order is
+  eligible; V1 excludes no product types. Buying 3 of a product is one line
+  and one review. The entitlement is consumed by the `Review` row itself
+  (unique `order_item_id`), so there is no separate entitlement table:
+  inserting the review is the atomic consumption.
+- **Scoping.** The form posts the token and the line's ID. The server finds
+  the invitation by token hash and accepts only a line of _that_ order;
+  product, verified flag and status come from the server. Another order's
+  line, an unknown ID or extra fields (product ID, status) cannot change
+  what is reviewed.
+- **Historical integrity.** The review references the `OrderItem` and its
+  product; the page shows the purchase-time name snapshot. Renaming,
+  re-slugging, repricing or archiving the product changes nothing (tested).
+- **Closing.** When every line has a review, the link is fully used and
+  gets the generic "cannot be used" page. Deleting a review (a Milestone 12
+  decision) would make that line reviewable again while the link is valid;
+  rejecting does not. Milestone 12 should prefer rejection.
+
+### Token: stable across email retries, never stored
+
+The outbox renders the shipping email at send time and may send it several
+times under one Resend idempotency key, which requires an identical payload
+(Milestone 10). Minting a token per render would break that; storing the raw
+token to rebuild the URL would put usable links in the database. Design:
+
+```
+nonce     = 32 random bytes (crypto.randomBytes), stored as base64url
+key       = HKDF-SHA256(AUTH_SECRET, salt "heavycards", info "heavycards/review-link/v1")
+rawToken  = HMAC-SHA256(key, "review-token:" + nonce), base64url, 43 characters
+tokenHash = SHA-256(rawToken), stored, unique
+```
+
+- **Retries:** every render re-derives the same URL from the stored nonce;
+  no render mints a token. Tested: a timeout, a refusal and a success send
+  three identical messages under one key, and one invitation exists.
+- **Database leak:** nonce and hash alone produce nothing usable; the key
+  exists only in the environment. Neither the hash nor the nonce works as a
+  URL token (tested in DB and E2E).
+- **Strength:** an HMAC with a secret key over a 256-bit CSPRNG nonce is
+  indistinguishable from 256 random bits. Someone holding **both** the
+  database and `AUTH_SECRET` can derive links. That is inherent to
+  re-rendering an email without storing its content, and such an attacker
+  could already forge admin sessions.
+- **Verification** never needs the key: the URL token is format-checked,
+  hashed and looked up through the unique index (no comparison in code).
+- **Rotating `AUTH_SECRET`:** delivered links keep working (lookup is by
+  hash). A shipping email still waiting to be sent goes out without the
+  review section: the render compares the derived token with the stored
+  hash and logs `review_link_key_mismatch` instead of sending a dead link.
+  If an earlier attempt had already gone out with the link, Resend answers
+  "different payload" and the delivery becomes FAILED for staff (Milestone
+  10 rule); this only matters for a rotation in the middle of an outage.
+- **Lifetime:** 180 days from shipping (`REVIEW_TOKEN_TTL_DAYS`; PROJECT.md
+  §44 suggests about 180): enough for delivery and a considered review
+  weeks later, but not permanent. Expired, revoked, fully used, malformed
+  and unknown links all get the same Swedish page.
+
+Alternatives rejected: encrypting the raw token (same security, more moving
+parts); one link per line in the email (cluttered, and N tokens to keep
+stable); storing the rendered email (stores the token).
+
+### Creation with the first SHIPPED
+
+`transitionFulfillment` now takes `reviewLinkKey` (in production
+`reviewLinkKey` from `src/server/reviews/server.ts`; Milestone 12's actions
+pass it). On the first SHIPPED, inside the existing transaction with the
+order row locked, it inserts the invitation (`ON CONFLICT DO NOTHING` on the
+unique order) and then the `ORDER_SHIPPED` email obligation. Both commit or
+roll back together, so an email can never point to a missing invitation.
+
+- SHIPPED is reachable once, so repeated, concurrent or later transitions
+  (tracking correction, COMPLETED) never mint another invitation; the unique
+  index is the backstop. Tested with six concurrent SHIPPED submissions.
+- Unpaid, pending, failed, expired, cancelled and fully refunded orders
+  cannot reach SHIPPED (Milestone 10 precondition), so they never get one.
+- **Orders shipped before this milestone** get no invitation and no email.
+  Nothing is backfilled, the scheduled sweep only covers confirmations, and
+  a shipping email still owed from before is sent with its original content
+  (no review section). A future backfill would need an explicit decision
+  about contacting those customers.
+
+### Submission
+
+`submitReview` (called by the server action):
+
+1. Zod-validates the input (below); the rating is an integer 1–5.
+2. In one transaction: the invitation by token hash `FOR SHARE` (so a
+   future revocation waits), usable (not expired, not revoked), its order
+   paid (PAID, PARTIALLY_REFUNDED or REFUNDED) and shipped, and the line
+   part of that order with no review yet.
+3. Inserts the review: PENDING, `verifiedPurchase = true`, the line's
+   product, and the typed display name or "Verifierad kund".
+
+A double click, retry, second tab or concurrent request either sees the line
+reviewed or loses on the unique index (P2002 → `ALREADY_REVIEWED`); exactly
+one review exists (tested with ten concurrent submissions). The form also
+ignores clicks while a submission is pending.
+
+**Text rules** (`src/lib/validation/reviews.ts`, shared by browser and
+server): Unicode NFC; CRLF → LF; zero-width and bidirectional-override
+characters removed; spaces collapsed; at most one empty line in a row;
+trimmed; other control characters refused. Body 10–2 000 characters, title
+up to 100 (optional), display name up to 40 (optional, one line, no `@`,
+`://` or `www.`). Lengths count code points. Raw fields over 8 000
+characters are refused before normalization, and Next caps action bodies at
+1 MB. Reviews are stored and rendered as plain text (React escapes them;
+`whitespace-pre-line` keeps paragraphs); nothing is parsed as HTML or
+Markdown.
+
+**Public identity.** PROJECT.md §42 lists a display name as review content
+but defines no format. The customer may type one ("Namn som visas
+(valfritt)", e.g. a first name); blank shows "Verifierad kund". Nothing is
+derived from the order: `customerName` is never split, and email, address
+and order number are never shown or published. "Verifierat köp" remains
+the badge (unchanged component), so it is not also used as the name.
+Moderation is the safeguard if a customer types their full name.
+
+**Refunds** neither delete a submitted review nor issue a new invitation,
+and a refund after shipping does not withdraw the link (the customer did
+buy and receive the product). Moderation decides what is published.
+
+### Page and form
+
+- `/review/[token]` renders per request (it reads `headers()` for the rate
+  limit) and is never cached. It shows the purchased products (snapshot
+  name, current first image, quantity) with one form each, a privacy note,
+  and a thank-you for reviewed lines. Nothing about the customer is shown.
+- Unusable links get one page, "Länken kan inte användas", with HTTP 200
+  and identical text for every cause (tested in E2E), so it reveals nothing
+  about orders.
+- The form is a client component: a native radio group for the stars
+  (arrow keys, spoken labels such as "4 stjärnor av 5", visible focus, 44 px
+  targets), labelled fields with hints and Swedish errors linked through
+  `aria-describedby`, and `role="status"` for the result. With JavaScript it
+  submits from a transition, so a server-side error never clears the
+  customer's text (React resets forms after native form actions); without
+  JavaScript the same server action works as a plain form post.
+
+### Moderation
+
+`moderateReview(db, { actorId, input })` (`src/server/reviews/moderation.ts`):
+
+- Input `{ reviewId, decision: APPROVE | REJECT }`, Zod-validated.
+- One transaction: the actor re-checked `FOR SHARE` (active and
+  `canManageReviews`, i.e. OWNER or ADMIN per PROJECT.md §50, otherwise
+  `ForbiddenError`); the review locked `FOR UPDATE`; the transition checked:
+  PENDING → APPROVED/REJECTED, APPROVED → REJECTED (unpublish), REJECTED →
+  APPROVED, never back to PENDING.
+- Audit `APPROVE_REVIEW` / `REJECT_REVIEW` with `{ from, to, productId }`,
+  never the text or customer data. Repeating a decision is a no-op without
+  an audit entry (tested with six concurrent approvals: one change, one
+  entry).
+- Returns `revalidatePaths`: the product page, when the change touched
+  APPROVED (the only public state). `moderateReviewAndRevalidate`
+  (`src/server/reviews/server.ts`) runs the service and refreshes those
+  paths; a failed refresh is logged and never fails the decision. Product
+  cards and listings show no ratings, so only the product page is refreshed.
+- Not built (Milestone 12): the `/admin/reviews` screens, the dashboard's
+  pending count, deletion.
+
+### Public ratings
+
+The Milestone 4 architecture is unchanged: `getProductBySlug` loads the
+newest 20 APPROVED reviews and the APPROVED-only count and average;
+`ProductReviews` renders them (with an empty state), and product JSON-LD
+includes AggregateRating only when approved reviews exist. Tested: pending
+and rejected reviews never appear or count; approving ratings 5 and 2 gives
+3.5 from 2 reviews.
+
+### Security and privacy
+
+- **Headers:** `/review/**` sends `X-Robots-Tag: noindex, nofollow` and
+  `Referrer-Policy: no-referrer` (next.config.ts); the page also sets the
+  `robots` and `referrer` meta tags. Responses are `no-store`. The page
+  loads no third-party resources (self-hosted font; images through
+  `/_next/image` on our own origin), and there is no analytics.
+- **No redirects** carry the token anywhere.
+- **Rate limits** (PostgreSQL buckets per HMAC'd client IP): 60 page views
+  and 20 submissions per 10 minutes. With 256-bit tokens they cap load and
+  spam; they are not what prevents guessing.
+- **CSRF:** the action uses no cookie or session, so a cross-site form could
+  only use a token its author already has. Next.js also refuses actions
+  whose `Origin` differs from the host.
+- **Logging:** the token is never logged, audited or stored. Errors are
+  logged by name only (`logSafe`). A DB test captures all console output
+  over shipping, email retries, page lookup, submissions and moderation, and
+  searches it and every relevant table for the token. The console email
+  transport never prints order emails (Milestone 10).
+- **Known limit:** as with admin invitation and reset links, the token is in
+  the URL, so hosting access logs (Vercel) can record it. Access to those
+  logs is an operational control (Milestone 15).
+
+### Testing
+
+- **Unit:** token derivation (stable, unique, unusable without the key,
+  hash and nonce rejected, 180 days); the input schema and normalization
+  (ratings, lengths in code points, oversized input, control characters,
+  HTML kept as text, extra fields stripped); moderation transitions and the
+  public-state rule; order eligibility; the revalidating wrapper.
+- **DB** (`tests/db/reviews.test.ts`; real PostgreSQL, real fulfillment and
+  outbox, link taken from the email): invitation creation and uniqueness
+  (repeated, concurrent, later transitions; unshippable orders); one URL
+  across retries; key rotation; orders shipped before this milestone;
+  generic answers for invalid, hash, nonce, order ID and email; expired,
+  revoked and consumed links; foreign lines and product substitution;
+  double and concurrent submissions; quantity 3; several products;
+  renamed and archived products; refunds; ratings; moderation
+  authorization, audit, concurrency and revalidation paths; token privacy
+  in logs and tables. Updated: the Milestone 10 shipping test now expects
+  the link, and integrity tests cover the new constraints.
+- **Mutation checks during development:** removing the unique-violation
+  handling fails the concurrency test; dropping the order scope from the
+  line lookup fails the substitution test; rendering shipping emails
+  without the link fails 30 tests.
+- **E2E** (`reviews` project, after `checkout`): shipping-email link → page
+  (headers, noindex, no personal data, axe) → Swedish browser validation →
+  keyboard rating → submit → pending review in the database → second
+  product → link closed on reload; a second tab cannot review again;
+  unknown, malformed, hash, nonce, order-ID, tampered and expired links give
+  one identical page; a pending review stays off the product page until
+  approved, then shows with "Verifierat köp"; phone layout. Staff actions
+  run the real services through `e2e/support/review-actions.ts` (tsx with
+  the `react-server` condition), because the admin screens are Milestone 12. The approval therefore appears through the 60 s ISR window rather
+  than on-demand revalidation, which the unit test covers.
+
+### Dependencies
+
+None added.

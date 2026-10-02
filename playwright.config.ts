@@ -18,6 +18,7 @@ if (!process.env.DATABASE_URL && existsSync(".env.local")) {
 const isCI = Boolean(process.env.CI);
 const CATALOG_ADMIN_SPEC = /admin-catalog\.spec\.ts$/;
 const CHECKOUT_SPEC = /checkout\.spec\.ts$/;
+const REVIEWS_SPEC = /reviews\.spec\.ts$/;
 const port = Number(process.env.E2E_PORT ?? 3100);
 const baseURL = `http://localhost:${port}`;
 
@@ -45,12 +46,12 @@ export default defineConfig({
     {
       name: "desktop-chromium",
       use: { ...devices["Desktop Chrome"] },
-      testIgnore: [CATALOG_ADMIN_SPEC, CHECKOUT_SPEC],
+      testIgnore: [CATALOG_ADMIN_SPEC, CHECKOUT_SPEC, REVIEWS_SPEC],
     },
     {
       name: "mobile-chromium",
       use: { ...devices["Pixel 7"] },
-      testIgnore: [CATALOG_ADMIN_SPEC, CHECKOUT_SPEC],
+      testIgnore: [CATALOG_ADMIN_SPEC, CHECKOUT_SPEC, REVIEWS_SPEC],
     },
     // Catalog administration publishes and edits products, which would change
     // the listings the storefront tests count on. It therefore runs after
@@ -72,6 +73,16 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] },
       testMatch: CHECKOUT_SPEC,
       dependencies: ["catalog-admin"],
+      fullyParallel: false,
+    },
+    // Reviews ship orders and publish reviews on their own products; they
+    // run after everything else and remove their data again.
+    {
+      name: "reviews",
+      use: { ...devices["Desktop Chrome"] },
+      testMatch: REVIEWS_SPEC,
+      dependencies: ["checkout"],
+      // One worker: the spec cleans up its data in beforeAll.
       fullyParallel: false,
     },
   ],

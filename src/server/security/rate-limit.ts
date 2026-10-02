@@ -28,6 +28,24 @@ export const CHECKOUT_RATE_LIMIT: RateLimitRule = {
   windowMs: 10 * 60 * 1000,
 };
 
+/**
+ * Review links are public pages (no account). Tokens have 256 bits, so
+ * these limits are not what stops guessing; they cap database work and
+ * submission spam per client while leaving room for a customer reviewing
+ * several products and reloading.
+ */
+export const REVIEW_PAGE_RATE_LIMIT: RateLimitRule = {
+  scope: "review-page",
+  limit: 60,
+  windowMs: 10 * 60 * 1000,
+};
+
+export const REVIEW_SUBMIT_RATE_LIMIT: RateLimitRule = {
+  scope: "review-submit",
+  limit: 20,
+  windowMs: 10 * 60 * 1000,
+};
+
 export type RateLimitResult = { allowed: boolean; retryAfterSeconds: number };
 
 /**

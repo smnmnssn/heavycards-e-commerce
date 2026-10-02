@@ -430,21 +430,59 @@ describe("review constraints", () => {
   it("stores review tokens only as SHA-256 hashes", async () => {
     const { order } = await purchasedItem();
     const rawToken = generateSecureToken();
+    const nonce = generateSecureToken();
     const expiresAt = new Date(Date.now() + 86_400_000);
 
     await db.reviewToken.create({
-      data: { orderId: order.id, tokenHash: hashToken(rawToken), expiresAt },
+      data: {
+        orderId: order.id,
+        nonce,
+        tokenHash: hashToken(rawToken),
+        expiresAt,
+      },
     });
     const found = await db.reviewToken.findUnique({
       where: { tokenHash: hashToken(rawToken) },
     });
 
     expect(found?.orderId).toBe(order.id);
+    const { order: other } = await purchasedItem();
     await expect(
       db.reviewToken.create({
-        data: { orderId: order.id, tokenHash: rawToken, expiresAt },
+        data: { orderId: other.id, nonce, tokenHash: rawToken, expiresAt },
       }),
     ).rejects.toThrow("review_tokens_token_hash_format_check");
+  });
+
+  it("allows one review invitation per order, with a well-formed nonce (Milestone 11)", async () => {
+    const { order } = await purchasedItem();
+    const invitation = () => ({
+      orderId: order.id,
+      nonce: generateSecureToken(),
+      tokenHash: hashToken(generateSecureToken()),
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    await db.reviewToken.create({ data: invitation() });
+
+    await expect(db.reviewToken.create({ data: invitation() })).rejects.toThrow(
+      /Unique constraint/,
+    );
+    const { order: other } = await purchasedItem();
+    await expect(
+      db.reviewToken.create({
+        data: { ...invitation(), orderId: other.id, nonce: "too-short" },
+      }),
+    ).rejects.toThrow("review_tokens_nonce_format_check");
+    await expect(
+      db.reviewToken.create({
+        data: {
+          ...invitation(),
+          orderId: other.id,
+          createdAt: new Date(),
+          revokedAt: new Date(Date.now() - 60_000),
+        },
+      }),
+    ).rejects.toThrow("review_tokens_revoked_check");
   });
 });
 

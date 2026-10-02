@@ -67,3 +67,10 @@ export const canManageCatalog = (admin: { role: AdminRole }) =>
  */
 export const canManageOrders = (admin: { role: AdminRole }) =>
   admin.role === "OWNER" || admin.role === "ADMIN";
+
+/**
+ * Review moderation is open to both roles (PROJECT.md §50: ADMIN can
+ * manage reviews).
+ */
+export const canManageReviews = (admin: { role: AdminRole }) =>
+  admin.role === "OWNER" || admin.role === "ADMIN";
