@@ -1,7 +1,7 @@
 /**
  * Staff actions for the review E2E tests, run through the real domain
- * services because the admin order and review screens arrive in
- * Milestone 12:
+ * services as a fast path that keeps those tests about the customer's side
+ * (the admin screens themselves are covered by admin-operations.spec.ts):
  *
  *   ship <orderId> <siteUrl>      NEW → PROCESSING → SHIPPED, then send the
  *                                 order's due emails with the file transport

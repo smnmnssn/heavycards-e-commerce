@@ -19,6 +19,7 @@ const isCI = Boolean(process.env.CI);
 const CATALOG_ADMIN_SPEC = /admin-catalog\.spec\.ts$/;
 const CHECKOUT_SPEC = /checkout\.spec\.ts$/;
 const REVIEWS_SPEC = /reviews\.spec\.ts$/;
+const ADMIN_OPERATIONS_SPEC = /admin-operations\.spec\.ts$/;
 const port = Number(process.env.E2E_PORT ?? 3100);
 const baseURL = `http://localhost:${port}`;
 
@@ -46,12 +47,22 @@ export default defineConfig({
     {
       name: "desktop-chromium",
       use: { ...devices["Desktop Chrome"] },
-      testIgnore: [CATALOG_ADMIN_SPEC, CHECKOUT_SPEC, REVIEWS_SPEC],
+      testIgnore: [
+        CATALOG_ADMIN_SPEC,
+        CHECKOUT_SPEC,
+        REVIEWS_SPEC,
+        ADMIN_OPERATIONS_SPEC,
+      ],
     },
     {
       name: "mobile-chromium",
       use: { ...devices["Pixel 7"] },
-      testIgnore: [CATALOG_ADMIN_SPEC, CHECKOUT_SPEC, REVIEWS_SPEC],
+      testIgnore: [
+        CATALOG_ADMIN_SPEC,
+        CHECKOUT_SPEC,
+        REVIEWS_SPEC,
+        ADMIN_OPERATIONS_SPEC,
+      ],
     },
     // Catalog administration publishes and edits products, which would change
     // the listings the storefront tests count on. It therefore runs after
@@ -83,6 +94,16 @@ export default defineConfig({
       testMatch: REVIEWS_SPEC,
       dependencies: ["checkout"],
       // One worker: the spec cleans up its data in beforeAll.
+      fullyParallel: false,
+    },
+    // Admin operations change store settings and moderate reviews, which
+    // the storefront shows; they run last, on their own products and
+    // orders, restore the settings and remove their data again.
+    {
+      name: "admin-operations",
+      use: { ...devices["Desktop Chrome"] },
+      testMatch: ADMIN_OPERATIONS_SPEC,
+      dependencies: ["reviews"],
       fullyParallel: false,
     },
   ],

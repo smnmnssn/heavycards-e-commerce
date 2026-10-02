@@ -6,12 +6,20 @@ import { BrandMark } from "@/components/store/brand-mark";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Container } from "@/components/ui/container";
-import { canManageCatalog, type AdminIdentity } from "@/lib/auth/authorization";
+import {
+  canManageCatalog,
+  canManageOrders,
+  canManageReviews,
+  type AdminIdentity,
+} from "@/lib/auth/authorization";
 import {
   ADMIN_CATEGORIES_PATH,
   ADMIN_HOME_PATH,
+  ADMIN_ORDERS_PATH,
   ADMIN_PRODUCTS_PATH,
+  ADMIN_REVIEWS_PATH,
   ADMIN_SETS_PATH,
+  ADMIN_SETTINGS_PATH,
   ADMIN_USERS_PATH,
 } from "@/lib/auth/routes";
 import { siteConfig } from "@/lib/config/site";
@@ -33,6 +41,12 @@ export function AdminShell({
   children: ReactNode;
 }) {
   const items: AdminNavItem[] = [{ href: ADMIN_HOME_PATH, label: "Översikt" }];
+  if (canManageOrders(admin)) {
+    items.push({ href: ADMIN_ORDERS_PATH, label: "Beställningar" });
+  }
+  if (canManageReviews(admin)) {
+    items.push({ href: ADMIN_REVIEWS_PATH, label: "Recensioner" });
+  }
   if (canManageCatalog(admin)) {
     items.push(
       { href: ADMIN_PRODUCTS_PATH, label: "Produkter" },
@@ -40,6 +54,8 @@ export function AdminShell({
       { href: ADMIN_SETS_PATH, label: "Pokémon-set" },
     );
   }
+  // Every administrator may read the settings; only an OWNER may change them.
+  items.push({ href: ADMIN_SETTINGS_PATH, label: "Inställningar" });
   if (admin.role === "OWNER") {
     items.push({ href: ADMIN_USERS_PATH, label: "Administratörer" });
   }

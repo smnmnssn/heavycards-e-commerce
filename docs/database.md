@@ -464,6 +464,24 @@ UPDATE`) before checking that another active OWNER remains, so concurrent
   - email (system entries): `EMAIL_NEEDS_ATTENTION` (email kind, problem
     code, delivery ID, attempts) when automatic delivery stops; never the
     recipient or message.
+  - needs attention (Milestone 12, `Order`): `RESOLVE_ORDER_ATTENTION`
+    (`attentionId` of the PAYMENT_NEEDS_ATTENTION, EMAIL_NEEDS_ATTENTION or
+    shortfall MARK_ORDER_PAID entry, and its kind). An attention entry is
+    open while no resolution refers to it; nothing else changes. A
+    PAYMENT_NEEDS_ATTENTION entry stays open, and cannot be resolved, while
+    its order holds an ACTIVE reservation that still holds stock.
+    `RECHECK_ORDER_PAYMENT` (`outcome` of the administrator-triggered Stripe
+    re-check: `paid`, `expired`, `failed`, `processing`, `open`,
+    `needs_attention`, `no_change` or `unavailable`); the resulting payment
+    changes are the usual Milestone 9 system entries.
+  - store settings (Milestone 12, `StoreSettings`, entity ID `1`):
+    `UPDATE_STORE_SETTINGS` (`created`, and `changes` with old and new value
+    per changed field; none of them is secret). Unchanged saves are not
+    logged.
+- **Indexes for admin reads.** `(entity_type, entity_id, created_at)` serves
+  an order's history; `(action, created_at)` (migration
+  `20261002180000_audit_action_index`) lets the dashboard and the order list
+  find open attention entries without scanning the whole log.
 
 ## Store settings
 
@@ -478,9 +496,20 @@ UPDATE`) before checking that another active OWNER remains, so concurrent
   - default SEO texts.
 - Secrets never go here.
 - No migration inserts a default row, because shipping prices and similar
-  values are business decisions. Production must create the row before
-  checkout is enabled (launch checklist, Milestone 15). The development seed
-  creates it with placeholder values.
+  values are business decisions. Since Milestone 12 the OWNER creates it by
+  saving `/admin/settings` once; until then checkout answers "payment
+  unavailable". The development seed creates it with placeholder values.
+- **Merchant-editable** (every column above, `/admin/settings`, OWNER only;
+  ADMIN can read them): `store_name`, `contact_email`, `company_name`,
+  `organization_number` (stored `NNNNNN-NNNN`, Luhn-checked),
+  `shipping_price_amount` (0–1 000 kr), `free_shipping_threshold_amount`
+  (NULL = off, otherwise 1 kr–100 000 kr), `default_shipping_carrier`,
+  `vat_rate_basis_points` (Swedish rates 25/12/6/0 %), `low_stock_threshold`
+  (0–1 000) and the default SEO texts. Amounts are typed in kronor and stored
+  as öre.
+- **Not here, ever:** infrastructure configuration stays in environment
+  variables (Stripe and Resend keys, webhook and cron secrets, `EMAIL_FROM`,
+  `AUTH_SECRET`, database URLs, storage tokens, `APP_URL`).
 
 ## Rate limits
 

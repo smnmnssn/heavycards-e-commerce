@@ -159,7 +159,8 @@ type FakeSessionFile = {
   [key: string]: unknown;
 };
 
-async function patchFakeSession(
+/** Edits what the fake Stripe reports for a session (tests play Stripe). */
+export async function patchFakeSession(
   sessionId: string,
   patch: (session: FakeSessionFile) => FakeSessionFile,
 ) {

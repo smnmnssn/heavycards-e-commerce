@@ -154,9 +154,12 @@ test.describe("OWNER", () => {
       page.getByRole("navigation", { name: "Adminmeny" }).getByRole("link"),
     ).toHaveText([
       "Översikt",
+      "Beställningar",
+      "Recensioner",
       "Produkter",
       "Kategorier",
       "Pokémon-set",
+      "Inställningar",
       "Administratörer",
     ]);
     await expectNoAxeViolations(page);
@@ -209,7 +212,15 @@ test.describe("ADMIN", () => {
     );
     await expect(
       page.getByRole("navigation", { name: "Adminmeny" }).getByRole("link"),
-    ).toHaveText(["Översikt", "Produkter", "Kategorier", "Pokémon-set"]);
+    ).toHaveText([
+      "Översikt",
+      "Beställningar",
+      "Recensioner",
+      "Produkter",
+      "Kategorier",
+      "Pokémon-set",
+      "Inställningar",
+    ]);
   });
 
   test("is refused administrator management on the server", async ({

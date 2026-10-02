@@ -2139,3 +2139,408 @@ and rejected reviews never appear or count; approving ratings 5 and 2 gives
 ### Dependencies
 
 None added.
+
+## Milestone 12 — Admin dashboard, orders, reviews and store settings (2026-10-02)
+
+The day-to-day control panel on top of the Milestone 6–11 services. Routes
+are in [routes.md](routes.md); audit actions, the new index and the
+merchant-editable settings in [database.md](database.md). The only schema
+change is one index.
+
+### Layers
+
+| Layer                                                                | Module                                                              |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| Database re-check of the acting administrator (reads and writes)     | `src/server/admin/access.ts`                                        |
+| Server-action guard (session, role, error hiding)                    | `src/server/admin/action-guard.ts`                                  |
+| Dashboard aggregates                                                 | `src/server/admin/dashboard.ts`                                     |
+| Order list parameters, list and detail queries                       | `src/server/admin/orders/{list-params,queries}.ts`                  |
+| Swedish labels, attention and history sentences (pure)               | `src/server/admin/orders/presenters.ts`                             |
+| Needs-attention model and "mark handled"                             | `src/server/admin/orders/attention.ts`                              |
+| Fulfillment form → `transitionFulfillment` (Milestone 10)            | `src/server/admin/orders/fulfillment-form.ts`                       |
+| Stripe Dashboard links                                               | `src/server/admin/orders/stripe-links.ts`                           |
+| Review list (moderation is the Milestone 11 service)                 | `src/server/admin/reviews/queries.ts`                               |
+| Settings schema (browser and server), settings service, revalidation | `src/lib/validation/store-settings.ts`, `src/server/admin/settings` |
+| Server actions                                                       | `src/app/admin/(panel)/{orders,reviews,settings}/actions.ts`        |
+| Pages and components                                                 | `src/app/admin/(panel)/*`, `src/components/admin/*`                 |
+
+No domain logic was duplicated. Fulfillment transitions, the payment
+precondition, `shippedAt`, the review invitation and the shipping-email
+obligation stay in `transitionFulfillment`; moderation rules, audit and
+revalidation paths in `moderateReview` / `moderateReviewAndRevalidate`.
+Pages only call the pure domain helpers (`allowedFulfillmentTransitions`,
+`fulfillmentAllowedForPayment`, `canModerate`) to decide which buttons to
+offer; the services validate every submission again.
+
+### Authorization
+
+- **Rules** (`src/lib/auth/authorization.ts`): `canManageOrders` and
+  `canManageReviews` (OWNER and ADMIN, PROJECT.md §50, unchanged) and the new
+  `canManageStoreSettings` (OWNER only: the "sensitive store settings" of
+  §50). Every administrator may _read_ the settings (useful when answering
+  customers); ADMIN sees a read-only summary without the form.
+- **Pages** call `requireAdmin()` and render a 403 panel when the rule fails.
+- **Actions** run through `runAdminAction`:
+  - no session → login redirect;
+  - wrong role → Swedish error, and the service is never called;
+  - a ForbiddenError from the service → the same message;
+  - anything else → a generic message, logged by error name only.
+- **Services re-check in the database.** Writes lock the actor `FOR SHARE`
+  inside their transaction (`lockActiveAdmin`, as in Milestones 7–11). New in
+  this milestone: the order, dashboard, review-list and settings _reads_
+  also re-check the actor (`assertActiveAdmin`, one indexed query), because
+  they return customer data. A deactivated account is refused even if its
+  session were still accepted, and the services are safe to call on their
+  own.
+- Session expiry, inactive rejection, the last-OWNER guard and CSRF are the
+  Milestone 6 mechanisms, unchanged. The new actions are server actions, so
+  Next.js's Origin/Host check applies.
+- Navigation shows links by the same rules, as a convenience only.
+
+### Dashboard (`/admin`)
+
+Operational information first (PROJECT.md §52), no charts:
+
+- **Kräver åtgärd**: open needs-attention items (below), counted per kind,
+  with the latest ten linked to their orders, or an explicit "nothing needs
+  attention" line.
+- **Att göra** tiles linking to pre-filtered lists:
+  - paid orders not started (NEW);
+  - paid orders being handled (PROCESSING);
+  - pending reviews;
+  - published products at or below the low-stock threshold;
+  - when non-zero: fully refunded orders still open (to be cancelled), and
+    order emails waiting for a retry or overdue (scheduler idle for 30
+    minutes).
+- **Försäljning senaste 30 dagarna**: number of orders, amount paid,
+  refunded and net. The definition is shown on the page:
+  - orders whose _payment time_ falls in the last 30 days, with status PAID,
+    PARTIALLY_REFUNDED or REFUNDED;
+  - amounts include VAT and shipping;
+  - net subtracts what has been refunded on those orders so far;
+  - pending, failed and expired checkouts never count.
+
+  Sums are computed in SQL as bigint.
+
+- **Senaste beställningar** (8) and **Senaste orderhändelser** (8 audit
+  entries rendered as sentences), plus the five lowest-stock products.
+
+Every number is one aggregate query (`COUNT … FILTER`, `SUM`) over indexed
+columns; the lists reuse the bounded order and product list queries. Nine
+queries run in parallel, plus one batched order-number lookup for the
+events. Nothing loads whole tables.
+
+### Order list (`/admin/orders`)
+
+- **Search** (`parseOrderSearch`):
+  - "HC-10001", "hc10001" or "10001" → the public order number;
+  - a `cs_…` or `pi_…` ID → that order;
+  - anything else → all terms must match the name or email (`LIKE`,
+    wildcards escaped).
+- **Filters:**
+  - payment status. The default is "everything except abandoned checkouts"
+    (no EXPIRED); "betalda" means PAID or PARTIALLY_REFUNDED;
+  - fulfillment status ("att hantera" = NEW or PROCESSING);
+  - only orders needing attention. This overrides the default payment
+    filter, because a payment for an abandoned checkout is exactly such a
+    problem;
+  - an order-date range in Stockholm calendar days
+    (`AT TIME ZONE 'Europe/Stockholm'`, inclusive).
+
+  Sorting: newest, oldest, highest amount. Invalid parameters are ignored,
+  as on the product list.
+
+- **Privacy**: rows show number, date, the customer's name, units,
+  statuses, attention, total and refunded amount, but never email, phone or
+  address. The detail page shows those.
+- **One query per page**: lateral lookups for units and open attention, the
+  total with `count(*) OVER ()`, 50 rows per page. A page past the end falls
+  back to the last one.
+
+### Order detail (`/admin/orders/[id]`)
+
+- Number, created/paid/shipped times, payment and fulfillment status,
+  customer name, email, phone, delivery address.
+- Lines come from the `OrderItem` snapshots only (name, SKU, quantity, unit
+  and line price, VAT rate), never from the current product. Then subtotal,
+  shipping, total, VAT contained, refunded and net.
+- Stripe Checkout Session and PaymentIntent IDs, and a link to the payment
+  in the Stripe Dashboard (`/test/` unless the configured key is a live key;
+  only well-formed `pi_` IDs are linked).
+- Email state per kind from the outbox: status, attempts, sent time, next
+  attempt, the stored error code and the Resend ID (never the recipient or
+  content).
+- The review invitation's creation and expiry dates only; the token, nonce
+  and hash are never selected.
+- Open attention items with Swedish explanations and guidance.
+- History: the order's audit entries (oldest first, at most 200), rendered
+  by `describeOrderEvent` from whitelisted fields. Raw metadata is never
+  shown, so a metadata key added later cannot leak onto the screen.
+- An unknown or malformed ID shows "Beställningen finns inte" inside the
+  admin shell.
+
+### Fulfillment
+
+- The form posts to `transitionFulfillmentAction` → `submitFulfillmentForm`
+  → `transitionFulfillment(db, { actorId, input, reviewLinkKey })` with the
+  production `reviewLinkKey`. Tracking number and carrier are only sent for
+  SHIPPED, so other transitions can never clear them.
+- The UI offers exactly the domain's next steps:
+  - NEW → "Markera som behandlas";
+  - PROCESSING → carrier, optional tracking number, "Markera som skickad";
+  - SHIPPED → "Spara spårningsuppgifter" and "Markera som slutförd";
+  - cancelling (NEW or PROCESSING) needs a second confirmation and explains
+    that nothing is refunded or restocked automatically.
+
+  Unpaid orders cannot be processed or shipped (the service precondition,
+  explained in Swedish).
+
+- **Exactly once.** The first SHIPPED creates the invitation and the
+  shipping-email obligation in the service's transaction. The action then
+  schedules `sendOrderEmailsAfterResponse(orderId)` only when the service
+  returned new obligations. Repeated saves are no-ops ("Inget att ändra");
+  tracking corrections write `UPDATE_ORDER_TRACKING` and never email; the
+  unique `(order_id, kind)` row is the backstop. No PostNord tracking URL is
+  generated.
+- The panel keeps one action state and stays mounted, so the result stays
+  visible after the page refreshes into the next status.
+
+### Refunds
+
+Refunds are made in the Stripe Dashboard (PROJECT.md §34). The order shows
+the refunded amount and status, a link to the payment, and the sentence
+"Återbetalningar görs i Stripe Dashboard och synkas hit automatiskt".
+
+- There is no refund button and no automatic restocking (§35). The page
+  says to adjust the product's stock if a returned item can be sold again
+  (the audited Milestone 7 stock edit).
+- A fully refunded order that was never shipped shows up on the dashboard,
+  so staff cancel it.
+
+### Needs attention
+
+- **Sources**, all recorded by earlier milestones as system audit entries:
+  - `PAYMENT_NEEDS_ATTENTION`: amount or currency mismatch, missing customer
+    data, payment for a closed checkout, unexpected session state;
+  - `EMAIL_NEEDS_ATTENTION`: delivery FAILED (attempts exhausted, unknown
+    outcome past the provider window, idempotency conflict);
+  - `MARK_ORDER_PAID` with `stockShortfalls`: paid although stock had been
+    lowered below the reservation.
+- **Acknowledgement vs. an active condition.** A payment problem whose
+  order still holds stock (an ACTIVE reservation awaiting Stripe's outcome)
+  is an _active_ unsafe condition, not history: it blocks inventory.
+  Everything else (email failures, stock shortfalls on paid orders, payment
+  problems whose order no longer holds stock) is history that may be
+  acknowledged.
+- **Open** (`openAttentionSql(now)`) means no `RESOLVE_ORDER_ATTENTION`
+  entry refers to the item, **or** it is a payment problem whose order still
+  holds stock. So even a resolution written before this rule (or by hand)
+  cannot hide an active hold. These states are final by design, so without
+  an explicit acknowledgement the dashboard would show every historical
+  problem forever.
+- **"Markera som hanterat"** (OWNER/ADMIN) appends the resolution entry
+  under the order row lock, so concurrent clicks give one entry. It changes
+  nothing else: payment, stock and emails stay as they are, and the audit
+  log stays append-only. For an active condition it is refused
+  (`STILL_BLOCKING`, checked under the same order lock the payment service
+  takes before it consumes or releases reservations), and the page shows
+  why instead of the button.
+- **"Kontrollera med Stripe igen"** (`recheckOrderPayment`, OWNER/ADMIN, for
+  a pending order with a Checkout Session) is the way out. It re-checks the
+  actor, then calls the Milestone 9 `syncCheckoutSession` exactly as
+  reconciliation does, so Stripe's authoritative state decides:
+  - paid and consistent → the existing finalization (stock consumed, order
+    PAID, confirmation email sent after the response);
+  - expired or failed → the existing release (reservations RELEASED, order
+    EXPIRED/FAILED, storefront revalidated);
+  - still inconsistent, processing or open → nothing changes; the stock
+    stays reserved and the problem stays visible;
+  - Stripe unreachable or not configured → nothing changes.
+
+  Every recheck writes `RECHECK_ORDER_PAYMENT` with the outcome. There is
+  no "release reservation" button, and no admin click ever releases stock.
+
+- Each item explains what happened and what to do (check the payment in
+  Stripe and refund there; check Resend and contact the customer), never
+  "edit the database". Problem codes without a known text get a generic
+  sentence.
+- **Remaining limit:** if Stripe keeps reporting a state HeavyCards cannot
+  accept (e.g. a paid amount that differs from the order), the hold remains
+  and the problem stays open. Refunding in Stripe does not change the
+  session's state; releasing such a hold remains a deliberate developer
+  decision.
+
+### Email state and resends
+
+The order page and dashboard show the outbox state. A manual resend was
+**not** added:
+
+- a FAILED delivery may already have reached the customer (unknown outcome
+  or idempotency conflict);
+- after Resend's 24-hour key window, a resend cannot be deduplicated.
+
+The page tells staff to check Resend and contact the customer directly. The
+Milestone 10 operator procedure (setting the row back to PENDING after
+checking Resend) remains the escape hatch.
+
+### Reviews (`/admin/reviews`)
+
+- Tabs per status with counts (one `groupBy`); pending first, oldest first,
+  25 per page.
+- Each card shows: product (linked), rating, title, body (plain text,
+  escaped), display name, "Verifierat köp", submitted time, status, the
+  order number (staff context), and a storefront link for approved reviews.
+- Approve and reject buttons follow `canModerate` (PENDING → APPROVED or
+  REJECTED; APPROVED ↔ REJECTED) and call `moderateReviewAndRevalidate`, so
+  the product page is refreshed on demand (proven in E2E without waiting
+  for the 60 s window).
+- **No deletion in V1** (deviation from PROJECT.md §47 "delete where
+  appropriate", as instructed). Rejecting removes a review from the
+  storefront while its row keeps the one-review-per-order-line entitlement
+  consumed; deleting it would let the customer's link review the line
+  again.
+- Review tokens never appear: the list does not select invitations at all.
+
+### Store settings (`/admin/settings`)
+
+- **Merchant-editable:** every StoreSettings column: store name,
+  customer-service email, company name, organisationsnummer, flat shipping
+  price, free-shipping threshold (empty = off), default carrier, VAT rate
+  for new orders, low-stock threshold, homepage SEO title and description.
+- **Not here:** Stripe and Resend keys, webhook and cron secrets,
+  `EMAIL_FROM`, `AUTH_SECRET`, database URLs, storage tokens, `APP_URL`.
+  They are environment variables, and the page says so.
+- **Validation** (shared schema, authoritative on the server):
+  - kronor typed as text and converted to öre by string arithmetic
+    (`parseSekInput`);
+  - shipping 0–1 000 kr; threshold 1 kr–100 000 kr or empty;
+  - email format;
+  - organisationsnummer normalized to `NNNNNN-NNNN`, with the Luhn check
+    digit (a 12-digit form with century is accepted);
+  - VAT restricted to the Swedish rates 25/12/6/0 %. It is a select, so a
+    typo cannot charge the wrong VAT; old orders keep their snapshotted
+    rate;
+  - low-stock threshold 0–1 000; SEO lengths as in the catalog.
+
+  The bounds catch misplaced digits and are easy to widen.
+
+- **Service** (`updateStoreSettings`):
+  - the OWNER is re-checked `FOR SHARE` and the row locked `FOR UPDATE`;
+  - unchanged saves write nothing; otherwise one `UPDATE_STORE_SETTINGS`
+    entry with old and new values per changed field;
+  - a store without a row gets it created by the first save, which opens
+    checkout;
+  - two simultaneous first saves give a conflict message instead of a
+    database error.
+- **Revalidation** (`storeSettingsRevalidationTargets`):
+  - footer details and the low-stock threshold are on every store page →
+    `revalidatePath("/", "layout")`;
+  - the SEO texts → the homepage;
+  - shipping, threshold, carrier and VAT are read live by checkout, and the
+    store name only by emails at send time → nothing.
+
+  A failed refresh is logged and never fails the save.
+
+### Navigation and UI
+
+- Menu: Översikt, Beställningar, Recensioner, Produkter, Kategorier,
+  Pokémon-set, Inställningar, Administratörer (OWNER).
+- On phones and tablets the menu is one horizontally scrollable row that
+  scrolls the current section into view. The page itself never scrolls
+  sideways (E2E-checked on a Pixel 7). The Milestone 7 catalog pages are
+  unchanged.
+- Lists are tables on large screens and stacked cards on phones, like the
+  product list. Status badges are monochrome; only real problems use the
+  error color.
+- New `error.tsx` for the admin panel (Swedish message, retry, the error
+  digest) and a loading skeleton for the order and review pages. The
+  skeleton is deliberately not panel-wide: a boundary around the Milestone 7
+  product form shifted its hydration timing and made a catalog E2E test
+  timing-sensitive under full-suite load. Every list has an empty state, and
+  every form field a Swedish error.
+- `AdminRowAction` became generic over the action-state type, so the
+  attention button reuses it.
+
+### Testing
+
+- **Unit:**
+  - settings schema: SEK ↔ öre, bounds, email, organisationsnummer and Luhn,
+    VAT options, round trip;
+  - order list parameters, search parsing and the fulfillment form mapping;
+  - presenters: Swedish sentences, no echo of unknown metadata, malformed
+    metadata;
+  - Stripe links (test/live, malformed IDs) and settings revalidation
+    targets;
+  - the server actions with mocked session and services: role refusal
+    before the service, redirect pass-through, error hiding, `reviewLinkKey`
+    passed, email dispatch only for new obligations, revalidation calls, no
+    delete export.
+- **DB** (`tests/db/admin-orders.test.ts`,
+  `tests/db/admin-reviews-settings.test.ts`, real PostgreSQL):
+  - **Authorization:** list and detail for OWNER, ADMIN, inactive, unknown
+    and malformed actors.
+  - **List:** payment and fulfillment filters; search by number, Stripe ID,
+    name and email; Stockholm date boundaries; sorting and paging; list
+    privacy.
+  - **Detail:** historic snapshots after product edits.
+  - **Fulfillment:** NEW → PROCESSING → SHIPPED with one obligation, one
+    invitation and one email; concurrent repeated SHIPPED saves; tracking
+    correction without email; tracking untouched by other transitions;
+    Swedish refusals.
+  - **Refunds** visible without inventory changes.
+  - **Needs attention:** counts for all three sources (one a real email
+    failure), concurrent resolution, foreign and non-attention entries.
+  - **Stock-blocking payment problems** (real checkout, mismatch recorded
+    by the payment service): refused even under concurrent clicks, still
+    open with a resolution entry present, kept reserved when Stripe still
+    disagrees or is unreachable, released only when Stripe reports expired
+    unpaid, finalized when Stripe reports a consistent payment, acknowledged
+    only afterwards; closed orders and inactive administrators refused
+    before Stripe is contacted. Disabling the blocking rule fails two of
+    these tests (checked).
+  - **Dashboard** counts and the sales definition.
+  - **Reviews:** list, tokens absent, moderation and reversal, no delete
+    decision, inactive moderators.
+  - **Settings:** save in öre with audit; revalidation targets; ADMIN and
+    inactive OWNER refused; invalid and tampered input; unchanged and
+    concurrent identical saves; new shipping price, threshold and VAT
+    applied by real checkouts (old orders unchanged); threshold off;
+    low-stock threshold; first-save creation opening checkout.
+- **E2E** (`admin-operations` project, after `reviews`):
+  - login → dashboard (axe);
+  - search and filter orders, open one: snapshots after a rename, personal
+    data only on the detail, Stripe link (axe);
+  - NEW → PROCESSING → SHIPPED with tracking; one shipping email with
+    tracking and review link from the file outbox; tracking correction and
+    a no-op save without email; COMPLETED; history;
+  - refund display without a refund button or restocking;
+  - a payment problem on the dashboard and the order, marked handled;
+  - a stock-blocking payment problem (real checkout and signed webhook):
+    no acknowledge button, recheck keeps the hold while Stripe disagrees,
+    releases it once Stripe reports the checkout expired, then it can be
+    acknowledged;
+  - approving a pending review publishes it on the cached product page at
+    once; rejecting removes it;
+  - the OWNER changes contact email and shipping price → the footer of a
+    cached page and the next checkout follow; then restores them;
+  - ADMIN reads settings without a form and is refused administrators;
+    signed-out redirects;
+  - the phone menu without sideways page scroll.
+
+  Two Milestone 6 assertions list the new menu.
+
+### Deliberately not built
+
+- Review deletion and manual email resends (see above).
+- A global audit-log screen (PROJECT.md §48 "if appropriate"). Each order
+  shows its history and the dashboard the latest order events; catalog and
+  administrator entries stay in the table.
+- A "restock returned item" button (§55). Restocking is the audited stock
+  field on the product page, a deliberate staff decision (§35).
+- A manual "release reservation" action: holds end only through Stripe's
+  answer (see Needs attention).
+- Revenue analytics beyond the 30-day summary.
+
+### Dependencies
+
+None added.

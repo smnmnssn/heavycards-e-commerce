@@ -597,6 +597,8 @@ model AuditLog {
   @@index([entityType, entityId, createdAt])
   @@index([adminUserId, createdAt])
   @@index([createdAt])
+  /// Admin dashboard and order list: open "needs attention" entries by action.
+  @@index([action, createdAt])
   @@map("audit_logs")
 }
 

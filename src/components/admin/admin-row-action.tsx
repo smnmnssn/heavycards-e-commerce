@@ -2,32 +2,40 @@
 
 import { useActionState } from "react";
 
-import type { AdminActionState } from "@/app/admin/(panel)/users/actions";
-import { Button } from "@/components/ui/button";
+import { Button, type ButtonVariant } from "@/components/ui/button";
 
-const initialState: AdminActionState = { status: "idle" };
+type RowActionState =
+  | { status: "idle" }
+  | { status: "success"; message: string }
+  | { status: "error"; message: string };
 
 /**
- * A single-button form for a row action (deactivate, reactivate, revoke).
- * Errors are announced next to the button.
+ * A single-button form for a row action (deactivate, reactivate, revoke,
+ * approve, mark handled). Errors are announced next to the button.
  */
-export function AdminRowAction({
+export function AdminRowAction<S extends RowActionState>({
   action,
   fields,
   label,
   pendingLabel,
   accessibleLabel,
+  variant = "secondary",
 }: {
-  action: (
-    state: AdminActionState,
-    formData: FormData,
-  ) => Promise<AdminActionState>;
+  action: (state: S, formData: FormData) => Promise<S>;
   fields: Record<string, string>;
   label: string;
   pendingLabel: string;
   accessibleLabel: string;
+  variant?: ButtonVariant;
 }) {
-  const [state, formAction, pending] = useActionState(action, initialState);
+  // Every row action state type includes "idle", so S accepts the start state.
+  const [state, formAction, pending] = useActionState(
+    action as unknown as (
+      state: RowActionState,
+      formData: FormData,
+    ) => Promise<RowActionState>,
+    { status: "idle" },
+  );
   return (
     <form action={formAction} className="flex flex-wrap items-center gap-3">
       {Object.entries(fields).map(([name, value]) => (
@@ -35,7 +43,7 @@ export function AdminRowAction({
       ))}
       <Button
         type="submit"
-        variant="secondary"
+        variant={variant}
         size="sm"
         className="h-11"
         disabled={pending}

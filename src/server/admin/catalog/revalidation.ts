@@ -18,7 +18,7 @@ import { productPath } from "@/lib/catalog-paths";
  * cache tags from its route file path.
  */
 
-export type RevalidationTarget = { path: string; type?: "page" };
+export type RevalidationTarget = { path: string; type?: "page" | "layout" };
 
 const LISTING_TARGETS: readonly RevalidationTarget[] = [
   { path: "/" },

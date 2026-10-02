@@ -22,8 +22,11 @@ server-side logic. Market: Sweden only, Swedish UI, SEK.
 | 6 — Admin authentication   | Done   |
 | 7 — Product administration | Done   |
 | 8 — Checkout and inventory | Done   |
-| 9 — Stripe webhooks        | Review |
-| 10–15                      | —      |
+| 9 — Stripe webhooks        | Done   |
+| 10 — Transactional email   | Done   |
+| 11 — Verified reviews      | Done   |
+| 12 — Admin operations      | Review |
+| 13–15                      | —      |
 
 Sections below marked _(later milestone)_ are placeholders and are filled in as
 those features land.
@@ -170,11 +173,19 @@ correctly signed event to `/api/stripe/webhook` with the local-only secret in
 The review tests (`e2e/reviews.spec.ts`) run after checkout, as the `reviews`
 project. They create `REV-E2E-` products with paid orders, ship them through
 the real fulfillment service and outbox (`e2e/support/review-actions.ts`, run
-with tsx; the admin order screens arrive in Milestone 12), follow the review
-link from the shipping email in `.e2e-outbox/`, and delete everything again.
-The moderation test waits up to the product page's 60-second cache window,
-because its staff action runs outside the web server. To run only them:
-`npx playwright test --project reviews --no-deps`.
+with tsx), follow the review link from the shipping email in `.e2e-outbox/`,
+and delete everything again. The moderation test waits up to the product
+page's 60-second cache window, because its staff action runs outside the web
+server. To run only them: `npx playwright test --project reviews --no-deps`.
+
+The admin operations tests (`e2e/admin-operations.spec.ts`) run last, as the
+`admin-operations` project: dashboard, order search and detail, fulfillment
+up to SHIPPED with the shipping email, refunds, needs-attention items, review
+moderation through the admin screen (published on the product page at once),
+store settings (footer and checkout shipping follow) and role boundaries,
+also on a phone. They use `OPS-E2E-` products and orders, restore the store
+settings and delete their data again. To run only them:
+`npx playwright test --project admin-operations --no-deps`.
 
 CI (`.github/workflows/ci.yml`) runs on every push to `main` and on pull requests:
 
@@ -412,7 +423,7 @@ in docs/architecture.md → Milestone 10):
 3. Set `EMAIL_FROM` to an address on the verified domain, e.g.
    `HeavyCards <order@heavycards.se>`. Production refuses placeholder domains
    (`example.com`, `.invalid`, `resend.dev` …).
-4. Set the store's contact email to the real customer-service mailbox (it is
+4. Set the store's contact email (`/admin/settings`) to the real customer-service mailbox (it is
    the reply-to address of order emails).
 
 ## Admin access
@@ -422,10 +433,40 @@ Administrators sign in at `/admin/login`. There is no public sign-up. Roles:
 - **OWNER**: everything, including administrator management at `/admin/users`.
 - **ADMIN**: the admin area except administrator management.
 
-Both roles manage the catalog: products (prices, stock, publishing, images,
-SEO) at `/admin/products`, categories at `/admin/categories` and Pokémon sets
-at `/admin/sets`. Normal store operation needs no Prisma Studio or database
-access. Every catalog change is written to the audit log.
+Both roles run the store day to day:
+
+| Area                                                   | Route                                                 |
+| ------------------------------------------------------ | ----------------------------------------------------- |
+| Overview: work to do, problems, sales, recent activity | `/admin`                                              |
+| Orders: search, detail, fulfillment, tracking          | `/admin/orders`, `/admin/orders/[id]`                 |
+| Review moderation                                      | `/admin/reviews`                                      |
+| Catalog: products, categories, Pokémon sets            | `/admin/products`, `/admin/categories`, `/admin/sets` |
+| Store settings (OWNER edits, ADMIN reads)              | `/admin/settings`                                     |
+| Administrators (OWNER only)                            | `/admin/users`                                        |
+
+Normal store operation needs no Prisma Studio or database access. Every
+change is written to the audit log; an order's history is shown on its page.
+
+- **Refunds** are made in the Stripe Dashboard (each order links to its
+  payment) and synchronized back automatically. They never change stock;
+  adjust a product's stock if a returned item can be sold again.
+- **Kräver åtgärd.** Payment, email and stock problems that the system
+  stopped on (instead of guessing) appear on the overview and the order.
+  "Markera som hanterat" removes an item from the list once dealt with; it
+  changes nothing else. A payment problem whose order still holds stock
+  cannot be marked handled: "Kontrollera med Stripe igen" asks Stripe again
+  and lets the payment service finalize the order (paid) or release the
+  stock (expired or failed). Otherwise the stock stays reserved and the
+  problem stays visible.
+- **Store settings vs. configuration.** `/admin/settings` holds the business
+  rules: store name, customer-service email, company name and
+  organisationsnummer, flat shipping price, free-shipping threshold, default
+  carrier, VAT rate for new orders, low-stock threshold and the homepage's
+  SEO texts. Technical configuration stays in environment variables and is
+  never shown in admin: Stripe and Resend keys, `EMAIL_FROM`, `AUTH_SECRET`,
+  `DATABASE_URL`, `CRON_SECRET`, storage tokens and `APP_URL`. A fresh
+  production database has no settings row: checkout stays closed until the
+  OWNER saves the settings form once.
 
 **First OWNER (production or a fresh database).** Run once, against the target
 database, from a trusted machine:

@@ -49,3 +49,14 @@ const instantFormatter = new Intl.DateTimeFormat("sv-SE", {
 export function formatInstantDate(value: Date): string {
   return instantFormatter.format(value);
 }
+
+const instantDateTimeFormatter = new Intl.DateTimeFormat("sv-SE", {
+  timeZone: siteConfig.timeZone,
+  dateStyle: "medium",
+  timeStyle: "short",
+});
+
+/** An instant with date and time in Sweden, e.g. "2 okt. 2026 14:05". */
+export function formatInstantDateTime(value: Date): string {
+  return instantDateTimeFormatter.format(value);
+}

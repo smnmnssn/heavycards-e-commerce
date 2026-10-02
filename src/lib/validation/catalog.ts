@@ -30,7 +30,11 @@ export const STOCK_MAX = 1_000_000;
 export const SORT_ORDER_MIN = -9_999;
 export const SORT_ORDER_MAX = 9_999;
 
-const requiredText = (max: number, emptyMessage: string, label: string) =>
+export const requiredText = (
+  max: number,
+  emptyMessage: string,
+  label: string,
+) =>
   z
     .string({ error: emptyMessage })
     .trim()
@@ -38,7 +42,7 @@ const requiredText = (max: number, emptyMessage: string, label: string) =>
     .max(max, `${label} får vara högst ${max} tecken.`);
 
 /** Blank → null, so "no value" is stored as NULL rather than "". */
-const optionalText = (max: number, label: string) =>
+export const optionalText = (max: number, label: string) =>
   z
     .string()
     .transform((value) => value.replace(/\r\n?/g, "\n").trim())
@@ -72,7 +76,7 @@ const optionalIsoDate = z
   })
   .transform((value) => (value === "" ? null : value));
 
-const moneySchema = (message: string) =>
+export const moneySchema = (message: string) =>
   z.string({ error: message }).transform((value, ctx) => {
     const amount = parseSekInput(value);
     if (amount === null) {
@@ -82,7 +86,7 @@ const moneySchema = (message: string) =>
     return amount;
   });
 
-const optionalMoneySchema = (message: string) =>
+export const optionalMoneySchema = (message: string) =>
   z.string().transform((value, ctx) => {
     if (value.trim() === "") return null;
     const amount = parseSekInput(value);
@@ -93,7 +97,7 @@ const optionalMoneySchema = (message: string) =>
     return amount;
   });
 
-const integerSchema = (min: number, max: number, message: string) =>
+export const integerSchema = (min: number, max: number, message: string) =>
   z.string({ error: message }).transform((value, ctx) => {
     const trimmed = value.trim();
     if (!/^-?\d{1,9}$/.test(trimmed)) {

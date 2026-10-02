@@ -74,3 +74,11 @@ export const canManageOrders = (admin: { role: AdminRole }) =>
  */
 export const canManageReviews = (admin: { role: AdminRole }) =>
   admin.role === "OWNER" || admin.role === "ADMIN";
+
+/**
+ * Store settings (shipping, VAT, store details) are the "sensitive store
+ * settings" of PROJECT.md §50: only an OWNER may change them. Every
+ * administrator may read them.
+ */
+export const canManageStoreSettings = (admin: { role: AdminRole }) =>
+  admin.role === "OWNER";

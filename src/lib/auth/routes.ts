@@ -9,6 +9,9 @@ export const ADMIN_USERS_PATH = "/admin/users";
 export const ADMIN_PRODUCTS_PATH = "/admin/products";
 export const ADMIN_CATEGORIES_PATH = "/admin/categories";
 export const ADMIN_SETS_PATH = "/admin/sets";
+export const ADMIN_ORDERS_PATH = "/admin/orders";
+export const ADMIN_REVIEWS_PATH = "/admin/reviews";
+export const ADMIN_SETTINGS_PATH = "/admin/settings";
 
 /**
  * Set by the proxy on admin requests: the path being rendered, so a login
