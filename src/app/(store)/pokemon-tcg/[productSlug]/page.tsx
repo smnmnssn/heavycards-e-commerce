@@ -17,6 +17,7 @@ import {
 } from "@/components/store/purchase-panel";
 import { Container } from "@/components/ui/container";
 import type { ProductType } from "@/generated/prisma/enums";
+import { categoryPath, productPath, setPath } from "@/lib/catalog-paths";
 import { formatIsoDate } from "@/lib/dates";
 import { db } from "@/lib/db/client";
 import { env } from "@/lib/env/server";
@@ -30,7 +31,7 @@ import { presentationContext } from "@/server/catalog/listing";
 import { notFoundUnlessMoved } from "@/server/catalog/not-found";
 import {
   imageAlt,
-  productPath,
+  toParagraphs,
   toProductCardData,
 } from "@/server/catalog/presenters";
 import { productJsonLd } from "@/server/catalog/product-json-ld";
@@ -149,20 +150,19 @@ export default async function ProductPage({
           })
         ).items.map((item) => toProductCardData(item, context));
 
+  // Hem → Pokémon TCG → category → product: the hierarchy of the category
+  // landing page, in the visible trail and in BreadcrumbList alike.
   const breadcrumbs = [
     { label: "Hem", href: "/" },
     { label: "Pokémon TCG", href: "/pokemon-tcg" },
     {
       label: product.category.name,
-      href: `/kategori/${product.category.slug}`,
+      href: categoryPath(product.category.slug),
     },
     { label: product.name },
   ];
   const description = metaDescription(product);
-  const paragraphs = product.description
-    ?.split(/\n{2,}/)
-    .map((paragraph) => paragraph.trim())
-    .filter(Boolean);
+  const paragraphs = toParagraphs(product.description);
 
   return (
     <Container className="py-8 sm:py-12">
@@ -187,7 +187,7 @@ export default async function ProductPage({
         <div className="lg:sticky lg:top-28 lg:self-start">
           {product.pokemonSet && (
             <Link
-              href={`/set/${product.pokemonSet.slug}`}
+              href={setPath(product.pokemonSet.slug)}
               className="inline-flex min-h-11 items-center type-eyebrow text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
             >
               {product.pokemonSet.name}
@@ -228,7 +228,7 @@ export default async function ProductPage({
             <dt className="text-muted-foreground">Kategori</dt>
             <dd>
               <Link
-                href={`/kategori/${product.category.slug}`}
+                href={categoryPath(product.category.slug)}
                 className="underline underline-offset-4"
               >
                 {product.category.name}
@@ -239,7 +239,7 @@ export default async function ProductPage({
                 <dt className="text-muted-foreground">Set</dt>
                 <dd>
                   <Link
-                    href={`/set/${product.pokemonSet.slug}`}
+                    href={setPath(product.pokemonSet.slug)}
                     className="underline underline-offset-4"
                   >
                     {product.pokemonSet.name}
@@ -259,7 +259,7 @@ export default async function ProductPage({
         </div>
       </div>
 
-      {paragraphs && paragraphs.length > 0 && (
+      {paragraphs.length > 0 && (
         <section
           aria-labelledby="beskrivning"
           className="mt-16 grid gap-6 border-t border-border pt-12 lg:mt-24 lg:grid-cols-[1fr_2fr] lg:gap-16"
@@ -295,8 +295,8 @@ export default async function ProductPage({
             action={{
               label: "Visa alla",
               href: product.pokemonSet
-                ? `/set/${product.pokemonSet.slug}`
-                : `/kategori/${product.category.slug}`,
+                ? setPath(product.pokemonSet.slug)
+                : categoryPath(product.category.slug),
             }}
           />
           <ProductGrid>

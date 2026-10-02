@@ -324,6 +324,59 @@ test.describe("product lifecycle", () => {
     await expect(page).toHaveURL(`/pokemon-tcg/${newSlug}`);
   });
 
+  test("SEO fields override the automatic metadata; the sitemap follows publishing", async ({
+    page,
+  }) => {
+    await signIn(page);
+    const product = await createProduct(page, { status: "ACTIVE" });
+    const description = page.locator('meta[name="description"]');
+    const sitemapHas = async (slug: string) =>
+      (await (await page.request.get("/sitemap.xml")).text()).includes(
+        `/pokemon-tcg/${slug}</loc>`,
+      );
+
+    // Blank SEO fields: generated from the product name and set.
+    await page.goto(`/pokemon-tcg/${product.slug}`);
+    await expect(page).toHaveTitle(`${product.name} | HeavyCards`);
+    await expect(description).toHaveAttribute(
+      "content",
+      `Köp ${product.name} hos HeavyCards, från setet Destined Rivals. Priser inklusive moms och leverans inom Sverige.`,
+    );
+    await expect.poll(() => sitemapHas(product.slug)).toBe(true);
+
+    await page.goto(`/admin/products/${product.id}`);
+    // The form shows what is used while the fields are blank.
+    await expect(page.getByLabel("SEO-titel")).toHaveAttribute(
+      "placeholder",
+      product.name,
+    );
+    await page.getByLabel("SEO-titel").fill(`Köp ${product.name} online`);
+    await page.getByLabel("Metabeskrivning").fill("Egen text från E2E.");
+    await expect(
+      page.getByRole("figure", { name: "Förhandsvisning i sökresultat" }),
+    ).toContainText(`Köp ${product.name} online | HeavyCards`);
+    await save(page);
+
+    await expect(async () => {
+      await page.goto(`/pokemon-tcg/${product.slug}`);
+      await expect(page).toHaveTitle(`Köp ${product.name} online | HeavyCards`);
+      await expect(description).toHaveAttribute(
+        "content",
+        "Egen text från E2E.",
+      );
+      await expect(page.locator('meta[property="og:title"]')).toHaveAttribute(
+        "content",
+        `Köp ${product.name} online`,
+      );
+    }).toPass({ timeout: 15_000 });
+
+    // Archiving keeps the page (noindex) but removes it from the sitemap.
+    await page.goto(`/admin/products/${product.id}`);
+    await page.getByLabel("Status").selectOption("ARCHIVED");
+    await save(page);
+    await expect.poll(() => sitemapHas(product.slug)).toBe(false);
+  });
+
   test("archiving removes a product from listings but keeps its page", async ({
     page,
   }) => {
@@ -501,7 +554,9 @@ test.describe("categories and Pokémon sets", () => {
     expect(publicPage.status()).toBe(200);
 
     await page.getByLabel("URL-slug").fill(`${slug}-ny`);
-    await page.getByLabel("Beskrivning (valfri)").fill("Beskrivning från E2E.");
+    await page
+      .getByLabel("Beskrivning (valfri)", { exact: true })
+      .fill("Beskrivning från E2E.");
     await page.getByRole("button", { name: "Spara ändringar" }).click();
     await expect(
       page.getByText(

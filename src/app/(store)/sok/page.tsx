@@ -9,6 +9,7 @@ import { CategoryTiles } from "@/components/store/taxonomy-links";
 import { ButtonLink } from "@/components/ui/button";
 import { Container } from "@/components/ui/container";
 import { db } from "@/lib/db/client";
+import { pageMetadata } from "@/lib/seo/metadata";
 import { listCategories } from "@/server/data/catalog-queries";
 import { loadListing } from "@/server/catalog/listing";
 import {
@@ -24,12 +25,15 @@ export async function generateMetadata({
   searchParams,
 }: PageProps<"/sok">): Promise<Metadata> {
   const { query } = parseListingParams(await searchParams);
-  return {
+  // Search result pages are never indexed (PROJECT.md §65): any text can be
+  // put in a link, so indexable results would invite spam pages. Crawlers
+  // may still follow the product links.
+  return pageMetadata({
     title: query ? `Sökresultat för ”${query}”` : "Sök",
-    // Search result pages are never indexed (PROJECT.md §65).
-    robots: { index: false, follow: true },
-    alternates: { canonical: PATH },
-  };
+    description: "Sök bland förseglade Pokémon TCG-produkter hos HeavyCards.",
+    path: PATH,
+    index: false,
+  });
 }
 
 export default async function SearchPage({ searchParams }: PageProps<"/sok">) {

@@ -1,7 +1,9 @@
+import { siteConfig } from "@/lib/config/site";
+
 import { excerpt, firstText } from "./metadata";
 
 /*
- * Title and meta-description rules for catalog pages (docs/routes.md → SEO
+ * Title and meta-description rules for the homepage and catalog pages (docs/routes.md → SEO
  * behavior per page type). Stored SEO fields win; otherwise defaults are
  * generated from content, so administrators never have to write SEO texts.
  * Shared by the storefront pages and the admin search preview, which
@@ -74,4 +76,22 @@ export function setMetaDescription(set: {
     firstText(set.seoDescription, set.description) ??
     setFallbackDescription(set.name)
   );
+}
+
+/** Homepage title when store settings leave it blank (used as-is, no suffix). */
+export const HOME_DEFAULT_TITLE = `${siteConfig.brandName} – Pokémon TCG i Sverige`;
+
+export const HOME_DEFAULT_DESCRIPTION =
+  "Förseglade Pokémon TCG-produkter: booster boxes, Elite Trainer Boxes, booster packs och mer. Priser inklusive moms och leverans inom Sverige.";
+
+export function homeSeoTitle(settings: {
+  defaultSeoTitle: string | null;
+}): string {
+  return firstText(settings.defaultSeoTitle) ?? HOME_DEFAULT_TITLE;
+}
+
+export function homeMetaDescription(settings: {
+  defaultSeoDescription: string | null;
+}): string {
+  return firstText(settings.defaultSeoDescription) ?? HOME_DEFAULT_DESCRIPTION;
 }

@@ -5,7 +5,11 @@ import { useState } from "react";
 
 import { cn } from "@/lib/utils";
 
-import { GALLERY_SIZES, type GalleryImage } from "./gallery-shared";
+import {
+  GALLERY_SIZES,
+  MAIN_IMAGE_LOADING,
+  type GalleryImage,
+} from "./gallery-shared";
 
 /** Main image plus thumbnail buttons; only used with two or more images. */
 export function ProductGalleryInteractive({
@@ -26,7 +30,7 @@ export function ProductGalleryInteractive({
           width={current.width}
           height={current.height}
           sizes={GALLERY_SIZES}
-          priority={selected === 0}
+          {...(selected === 0 ? MAIN_IMAGE_LOADING : {})}
           className="size-full object-contain p-[6%]"
         />
       </div>

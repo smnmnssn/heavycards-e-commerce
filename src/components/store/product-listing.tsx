@@ -4,8 +4,8 @@ import { EmptyState } from "./empty-state";
 import { Pagination } from "./pagination";
 import { ProductCard, ProductGrid, type ProductCardData } from "./product-card";
 
-/** Cards above the fold on mobile and desktop get image priority (LCP). */
-const PRIORITY_CARDS = 4;
+/** Cards in view on load (mobile and desktop) load their images eagerly. */
+const EAGER_CARDS = 4;
 
 /**
  * Product grid with pagination and an empty state. Purely presentational:
@@ -44,7 +44,7 @@ export function ProductListing({
             <ProductCard
               key={product.href}
               product={product}
-              priority={page === 1 && index < PRIORITY_CARDS}
+              eager={page === 1 && index < EAGER_CARDS}
             />
           ))}
         </ProductGrid>

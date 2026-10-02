@@ -2544,3 +2544,213 @@ checking Resend) remains the escape hatch.
 ### Dependencies
 
 None added.
+
+## Milestone 13 — SEO and discoverability (2026-10-02)
+
+The page-by-page policy (indexing, fallbacks, canonicals, structured data,
+sitemap, robots) is in [routes.md → SEO](routes.md#seo-milestone-13). This
+section records the decisions behind it. There were **no schema changes**:
+products, categories, sets and store settings already had every SEO field
+needed, and the category/set `description` is the landing-page text.
+
+### Audit: what already existed
+
+Milestones 4–12 had already built most of the SEO base: `pageMetadata`,
+listing canonical/noindex rules (`listingSeo`), shared fallbacks
+(`catalog-defaults.ts`, also used by the admin previews), product
+Product/Offer/AggregateRating/BreadcrumbList JSON-LD, visible breadcrumbs,
+308 slug redirects with chain and loop protection, `X-Robots-Tag` on private
+areas, a noindex archived-product page and real 404s. These were kept. The
+gaps found and closed:
+
+| Gap                                                                                                             | Fix                                                                       |
+| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| No sitemap, no robots.txt                                                                                       | `app/sitemap.ts`, `app/robots.ts`                                         |
+| Previews and local builds were indexable copies of the store                                                    | deployment-level noindex and `Disallow: /` outside Vercel production      |
+| Next.js _replaces_ the parent `openGraph`, so `og:locale`, `og:site_name` and `og:type` were lost on every page | `pageMetadata` states them on every page                                  |
+| `robots: undefined` on indexable pages would also erase any parent robots value                                 | the key is omitted instead                                                |
+| No social image without product photos                                                                          | `/brand/heavycards-share.png`                                             |
+| Empty category/set pages were indexed (thin content)                                                            | `noindex, follow` while they have no listable product; not in the sitemap |
+| Category/set descriptions were cut at 400 characters                                                            | the full landing text follows the products                                |
+| No Organization/WebSite or collection structured data                                                           | homepage identity, `CollectionPage` on landing pages                      |
+| JSON-LD claimed `NewCondition` for every product type                                                           | only for SEALED                                                           |
+| Duplicate titles on paginated listings                                                                          | " – sida N"                                                               |
+| Deprecated `next/image` `priority`                                                                              | `loading` and `fetchPriority` (see below)                                 |
+
+### Deployment-level indexing
+
+- `isIndexableDeployment(VERCEL_ENV)` is the single rule: only
+  `VERCEL_ENV=production` may be indexed. It is evaluated when the
+  deployment is built, like the rest of the environment validation; Vercel
+  builds every preview and production deployment with its own `VERCEL_ENV`.
+- Everywhere else, `next.config.ts` adds `X-Robots-Tag: noindex, nofollow`
+  to every response and robots.txt disallows everything. Both layers are
+  used: robots.txt stops well-behaved crawlers from fetching at all, and the
+  header keeps out anything fetched anyway. Vercel also marks preview URLs
+  itself, but that is not relied on.
+- The per-page policy stays in `<meta name="robots">`, so it is visible and
+  E2E-testable in every environment; the deployment layer is the header.
+- Self-hosting outside Vercel is not covered by this rule (PROJECT.md names
+  Vercel); it would need an explicit variable.
+- Production robots.txt disallows only `/admin` and `/api/`. Token and
+  session URLs (`/review/*`, `/kassa/*`) and `/sok` are deliberately left
+  crawlable so their `noindex` can be read: a robots.txt block can still
+  surface a leaked URL in results, without its content.
+
+### Sitemap
+
+- `getSitemapData` runs bounded queries in parallel: listable products
+  (slug, `updatedAt`, primary image; at most 45 000), the categories and
+  sets that have a listable product, two `groupBy`s for their products'
+  latest change, and one aggregate. It never loads descriptions, reviews or
+  reservations.
+- Inclusion mirrors indexability exactly (`isListable`, the same
+  `listableWhere` as the listing counts); DB tests assert it equals the
+  storefront listing.
+- ARCHIVED products are excluded: their page is noindex, and a sitemap
+  lists only canonical, indexable URLs. The page itself stays, so old
+  links, orders and reviews keep working.
+- `revalidate = 3600`, plus `/sitemap.xml` in the catalog revalidation
+  targets, so publishing, archiving and slug changes show at once.
+- `lastmod` is meaningful: a product's own `updatedAt`; landing pages take
+  the later of their own edit and their products' latest edit.
+
+### Structured data
+
+- Only data HeavyCards actually has is emitted. No brand (accessories may
+  not be Pokémon, and there is no brand field), GTIN, shipping details or
+  return policy (shipping times and return terms are not modelled, and the
+  legal pages are still placeholders). Google may report these as optional
+  missing fields; that is accepted rather than fabricated.
+- COMING_SOON without preorder has no `Offer`, so Google may report the
+  product as ineligible for rich results until it can be ordered. Any other
+  availability value would be untrue.
+- `sku` is included (a real identifier, not sensitive); `releaseDate` and a
+  preorder's `availabilityStarts` match the date on the page.
+- The serializer escapes `<`, `>`, `&`, U+2028 and U+2029; the output is
+  still JSON that parses to the same values. Review text is plain data in
+  both the HTML and the JSON-LD.
+- Organization uses the brand name from config, and the legal name and
+  contact email from store settings; changing those already revalidates
+  every store page (Milestone 12). The logo is a 512×512 PNG rendering of
+  the official mark, because search engines want a raster logo.
+
+### Landing pages and internal linking
+
+- Category/set text: the first paragraph leads the page (shortened at 400
+  characters); the full text follows the products on page 1. Merchants
+  write normal text in the existing "Beskrivning" field; no CMS was added.
+- The set list that Milestone 4 had on `/pokemon-tcg` was removed by the
+  owner's design change (commit 96d7072) and is not reintroduced. Set pages
+  are reached from every product page (set link and related-products rail),
+  from the set filter and from the sitemap. Category pages are linked from
+  the homepage, `/pokemon-tcg`, search and every product breadcrumb.
+- Breadcrumbs follow the canonical hierarchy Hem → Pokémon TCG → category →
+  product; the visible trail and BreadcrumbList come from the same array.
+- No general redirect table for arbitrary URLs was added (Milestone 7 left
+  that open): only products, categories and sets have slugs that change,
+  and those are covered.
+
+### Images and Core Web Vitals
+
+A targeted review only, not a rewrite.
+
+- The product page's first image is the LCP element: `loading="eager"` and
+  `fetchPriority="high"`, which the Next.js 16 docs recommend over
+  `preload`. The deprecated `priority` prop is gone.
+- Listing cards: the first four on page 1 load eagerly without high
+  priority (several are LCP candidates depending on the viewport); the rest
+  load lazily.
+- Homepage product rows sit below the hero, whose heading is the LCP
+  element, so they now load lazily. Before, they were preloaded and
+  competed with critical resources.
+- All product images keep their stored intrinsic dimensions and square
+  frames (no CLS). Alt text is the admin text, otherwise the product name
+  (", bild N" for later images). Gallery thumbnails stay `alt=""` inside
+  labelled buttons.
+- No new client components. JSON-LD is server-rendered; the homepage's
+  script is placed last so it does not change the section order.
+- Not done: a real Lighthouse/CrUX measurement, which needs the production
+  deployment and real images (Milestone 15).
+
+### Admin
+
+- Product, category and set forms label the SEO fields "(valfri)" and say
+  what a blank field falls back to; the automatic value is shown as the
+  placeholder, so the merchant sees what will be used. The existing
+  character guidance and search preview are kept.
+- Store settings got the same treatment, plus a search preview for the
+  homepage (an absolute title, without "| HeavyCards").
+- No canonical, robots or structured-data controls are exposed: they are
+  derived from status, slug and content.
+
+### Known Next.js quirk
+
+On the first, uncached render of a redirecting product, category or set
+URL, Next.js 16.3.8 sends the identical `Location` header twice; cached
+responses send it once. Status (308) and target are correct, and browsers
+and crawlers follow it. The Milestone 7 architecture (redirect lookup only
+on the not-found path) is kept; revisit when upgrading Next.js.
+
+### Testing
+
+- **Unit:** `pageMetadata` (Open Graph on every page, no `robots` key when
+  indexable, share image vs product image, paged titles); product,
+  category, set and homepage fallbacks and overrides; deployment indexing
+  and robots.txt for production and non-production; the JSON-LD serializer
+  against script break-out; Organization/WebSite; CollectionPage; product
+  JSON-LD (identity, offer = visible price, availability mapping, preorder
+  start, condition by type, no invented properties, no rating without
+  approved reviews, rounding, review cap, hostile review text); the sitemap
+  builder; landing copy; `listingSeo` with tracking parameters and empty
+  landing pages; eager and lazy card images; revalidation targets.
+- **DB** (`tests/db/seo.test.ts`, seeded catalog): sitemap products equal
+  the listable set and the storefront listing (no DRAFT, ARCHIVED or future
+  publications); primary images; only categories and sets with listable
+  products; landing `lastmod`; the bound; listable counts; a renamed
+  product leaves the sitemap at its old URL, which 308s to a listed URL
+  with no chain; archiving removes it.
+- **E2E** (`e2e/seo.spec.ts` on desktop and mobile, plus one test in
+  `admin-catalog`): robots.txt and `X-Robots-Tag` of a non-production
+  build; sitemap contents and exclusions; homepage, product, category,
+  filtered, empty-set, search and 404 metadata and canonicals (including
+  tracking parameters); product JSON-LD against the visible price, stock
+  label and breadcrumbs; no rating without approved reviews; no offer for
+  coming soon; no JSON-LD on archived pages; the seeded 308 redirect; main
+  image loading. The admin test sets an SEO title and description, sees
+  them on the cached product page, and sees the sitemap add the product on
+  publish and drop it on archive.
+- Two existing E2E assertions changed: the smoke test now expects
+  `X-Robots-Tag: noindex, nofollow` on `/` (E2E runs a non-production
+  build), and one category test selects "Beskrivning (valfri)" exactly,
+  since "Metabeskrivning (valfri)" also matches it.
+- Structured data is checked against the expected schema.org shapes in
+  these tests. Google's Rich Results Test and Search Console have **not**
+  been run: they need the deployed production URL.
+
+### Dependencies
+
+None added. The share image and raster logo were rendered once from the
+official SVG with the already-installed `sharp` (shape unchanged; white on
+black and black on white) and are committed as static assets.
+
+### Manual SEO work for launch (Milestone 15)
+
+- Set `APP_URL` to the final https domain, and redirect the `*.vercel.app`
+  production alias (and `www`, if it is not the canonical host) to it in
+  Vercel.
+- Verify the domain in Google Search Console with a DNS TXT record (no
+  token in source), submit `https://<domain>/sitemap.xml`, and inspect the
+  homepage, a product, a category and a set with URL Inspection.
+- Run the Rich Results Test on a product with approved reviews and on the
+  homepage.
+- Check that `https://<domain>/robots.txt` shows `Allow: /` on production
+  and that a preview URL shows `Disallow: /`.
+- Replace the seed catalog and example image with real products and photos,
+  then run Lighthouse/PageSpeed on mobile for the homepage, a category and
+  a product.
+- Write Swedish category and set descriptions (a few paragraphs) for the
+  important landing pages.
+- When the information and legal pages have reviewed content, set
+  `indexable: true` for them in `src/lib/config/info-pages.ts`.
+- Optional: a custom homepage SEO title and description in Inställningar.

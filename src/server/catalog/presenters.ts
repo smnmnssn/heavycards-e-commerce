@@ -4,6 +4,7 @@ import type {
 } from "@/components/store/product-card";
 import { productPath } from "@/lib/catalog-paths";
 import { formatIsoDate, type IsoDate } from "@/lib/dates";
+import { excerpt } from "@/lib/seo/metadata";
 import type { ProductSummary } from "@/server/data/catalog-queries";
 import {
   availabilityLabels,
@@ -36,6 +37,36 @@ export function imageAlt(
 ): string {
   if (altText?.trim()) return altText.trim();
   return index === 0 ? productName : `${productName}, bild ${index + 1}`;
+}
+
+/** Plain-text paragraphs: a blank line in admin text starts a new one. */
+export function toParagraphs(text: string | null): string[] {
+  return (text ?? "")
+    .split(/\n\s*\n/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+}
+
+/** Longest landing-page lead before it is shortened (full text follows). */
+export const LANDING_LEAD_MAX = 400;
+
+/**
+ * Category/set landing copy (the admin "Beskrivning"). The first paragraph
+ * leads the page above the products; the full text, when there is more,
+ * follows the products, so a long text gives the page real content without
+ * pushing the products down. Without a description the generated fallback
+ * sentence is the lead.
+ */
+export function landingCopy(
+  description: string | null,
+  fallback: string,
+): { lead: string; body: string[] } {
+  const paragraphs = toParagraphs(description);
+  const [first, ...rest] = paragraphs;
+  if (!first) return { lead: fallback, body: [] };
+  const lead = excerpt(first, LANDING_LEAD_MAX);
+  if (lead !== first) return { lead, body: paragraphs };
+  return { lead, body: rest };
 }
 
 const stateBadges: Partial<Record<AvailabilityState, ProductCardBadge>> = {

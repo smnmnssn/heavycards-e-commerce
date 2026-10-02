@@ -27,7 +27,7 @@ import {
 } from "@/lib/validation/catalog";
 
 import { FormAlert } from "../form-alert";
-import { CharacterCount, describedBy, Field, FormSection } from "./form-layout";
+import { describedBy, Field, FormSection } from "./form-layout";
 import {
   PRODUCT_STATUS_HINTS,
   PRODUCT_STATUS_LABELS,
@@ -35,7 +35,11 @@ import {
   PRODUCT_TYPE_LABELS,
   PRODUCT_TYPES,
 } from "./labels";
-import { SeoPreview } from "./seo-preview";
+import {
+  SEO_SECTION_DESCRIPTION,
+  SeoFieldHint,
+  SeoPreview,
+} from "./seo-preview";
 
 type Option = { id: string; name: string };
 
@@ -495,16 +499,25 @@ function SeoSection({
   const values = useWatch({ control: form.control });
   const slug = values.slug?.trim() || "…";
   const setName = sets.find((set) => set.id === values.pokemonSetId)?.name;
-  const title = productSeoTitle({
+  const seoInput = {
     name: values.name?.trim() || "Produktnamn",
-    seoTitle: values.seoTitle ?? null,
-  });
-  const description = productMetaDescription({
-    name: values.name?.trim() || "Produktnamn",
-    seoDescription: values.seoDescription ?? null,
     shortDescription: values.shortDescription ?? null,
     description: values.description ?? null,
     setName: setName ?? null,
+  };
+  const title = productSeoTitle({
+    ...seoInput,
+    seoTitle: values.seoTitle ?? null,
+  });
+  const description = productMetaDescription({
+    ...seoInput,
+    seoDescription: values.seoDescription ?? null,
+  });
+  // What the storefront uses while the fields are blank.
+  const autoTitle = productSeoTitle({ ...seoInput, seoTitle: null });
+  const autoDescription = productMetaDescription({
+    ...seoInput,
+    seoDescription: null,
   });
   const slugChanged = wasPublished && slug !== savedSlug && slug !== "…";
 
@@ -512,26 +525,33 @@ function SeoSection({
     <FormSection
       id="seo"
       title="Sökmotorer (SEO)"
-      description="Valfritt. Tomma fält ersätts automatiskt med namn och beskrivning."
+      description={SEO_SECTION_DESCRIPTION}
     >
       <Field
         id={seoTitle.id}
-        label="SEO-titel"
+        label="SEO-titel (valfri)"
         hint={
-          <CharacterCount
+          <SeoFieldHint
+            whenBlank="Tomt: produktnamnet används."
             length={values.seoTitle?.trim().length ?? 0}
             recommended={SEO_TITLE_RECOMMENDED}
           />
         }
         error={seoTitle.error}
       >
-        <Input {...seoTitle.control} maxLength={200} autoComplete="off" />
+        <Input
+          {...seoTitle.control}
+          maxLength={200}
+          autoComplete="off"
+          placeholder={autoTitle}
+        />
       </Field>
       <Field
         id={seoDescription.id}
-        label="Metabeskrivning"
+        label="Metabeskrivning (valfri)"
         hint={
-          <CharacterCount
+          <SeoFieldHint
+            whenBlank="Tomt: kort beskrivning, annars början av beskrivningen eller en standardtext."
             length={values.seoDescription?.trim().length ?? 0}
             recommended={SEO_DESCRIPTION_RECOMMENDED}
           />
@@ -542,6 +562,7 @@ function SeoSection({
           {...seoDescription.control}
           maxLength={500}
           className="min-h-24"
+          placeholder={autoDescription}
         />
       </Field>
       <SeoPreview

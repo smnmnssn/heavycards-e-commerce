@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
 import { BrandMark } from "@/components/store/brand-mark";
+import { JsonLdScript } from "@/components/store/json-ld";
 import { SectionHeading } from "@/components/store/headings";
 import {
   ProductCard,
@@ -14,7 +15,11 @@ import { LockIcon, PackageIcon, TruckIcon } from "@/components/ui/icons";
 import { Section } from "@/components/ui/section";
 import { siteConfig } from "@/lib/config/site";
 import { db } from "@/lib/db/client";
-import { firstText, pageMetadata } from "@/lib/seo/metadata";
+import { brandRasterAssets } from "@/lib/config/brand";
+import { env } from "@/lib/env/server";
+import { homeMetaDescription, homeSeoTitle } from "@/lib/seo/catalog-defaults";
+import { storeIdentityJsonLd } from "@/lib/seo/json-ld";
+import { pageMetadata } from "@/lib/seo/metadata";
 import { presentationContext } from "@/server/catalog/listing";
 import { toProductCardData } from "@/server/catalog/presenters";
 import {
@@ -28,15 +33,11 @@ import { getPublicStoreInfo } from "@/server/data/store-settings";
 // follows catalog changes without a redeploy (PROJECT.md §10, §92).
 export const revalidate = 60;
 
-const DEFAULT_TITLE = `${siteConfig.brandName} – Pokémon TCG i Sverige`;
-const DEFAULT_DESCRIPTION =
-  "Förseglade Pokémon TCG-produkter: booster boxes, Elite Trainer Boxes, booster packs och mer. Priser inklusive moms och leverans inom Sverige.";
-
 export async function generateMetadata(): Promise<Metadata> {
   const info = await getPublicStoreInfo();
   return pageMetadata({
-    title: firstText(info.defaultSeoTitle) ?? DEFAULT_TITLE,
-    description: firstText(info.defaultSeoDescription) ?? DEFAULT_DESCRIPTION,
+    title: homeSeoTitle(info),
+    description: homeMetaDescription(info),
     path: "/",
     absoluteTitle: true,
   });
@@ -66,13 +67,14 @@ export default async function HomePage() {
     listProducts(db, { sort: "newest", page: 1, pageSize: 4, now, ...query });
 
   // One round of parallel queries; each section is bounded.
-  const [featured, newArrivals, upcoming, categories, context] =
+  const [featured, newArrivals, upcoming, categories, context, info] =
     await Promise.all([
       section({ scope: "featured" }),
       section({ scope: "new", pageSize: 8 }),
       section({ scope: "upcoming", sort: "release" }),
       listCategories(db, now),
       presentationContext(now),
+      getPublicStoreInfo(),
     ]);
   const cards = (items: typeof featured.items) =>
     items.map((item) => toProductCardData(item, context));
@@ -156,7 +158,6 @@ export default async function HomePage() {
         title="Utvalda produkter"
         action={{ label: "Hela sortimentet", href: "/pokemon-tcg" }}
         products={cards(featured.items)}
-        priority
       />
 
       {categories.some((category) => category.productCount > 0) && (
@@ -186,6 +187,16 @@ export default async function HomePage() {
         action={{ label: "Alla kommande", href: "/kommande" }}
         products={cards(upcoming.items)}
       />
+
+      {/* Last, so the visible sections keep their document order. */}
+      <JsonLdScript
+        data={storeIdentityJsonLd({
+          siteUrl: env.siteUrl,
+          logoPath: brandRasterAssets.logo.src,
+          legalName: info.companyName,
+          email: info.contactEmail,
+        })}
+      />
     </>
   );
 }
@@ -197,14 +208,12 @@ function ProductSection({
   title,
   action,
   products,
-  priority = false,
 }: {
   id: string;
   eyebrow: string;
   title: string;
   action: { label: string; href: string };
   products: ProductCardData[];
-  priority?: boolean;
 }) {
   if (products.length === 0) return null;
 
@@ -217,12 +226,10 @@ function ProductSection({
       <Container>
         <SectionHeading eyebrow={eyebrow} title={title} action={action} />
         <ProductGrid>
-          {products.map((product, index) => (
-            <ProductCard
-              key={product.href}
-              product={product}
-              priority={priority && index < 4}
-            />
+          {/* Below the hero, so images load lazily (the hero heading is the
+              LCP element). */}
+          {products.map((product) => (
+            <ProductCard key={product.href} product={product} />
           ))}
         </ProductGrid>
       </Container>

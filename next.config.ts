@@ -1,5 +1,7 @@
 import type { NextConfig } from "next";
 
+import { isIndexableDeployment } from "./src/lib/seo/indexing";
+
 /**
  * Baseline security headers applied to every response.
  *
@@ -37,6 +39,13 @@ const checkoutHeaders = adminHeaders;
 // same applies (PROJECT.md §65).
 const reviewHeaders = adminHeaders;
 
+// Every deployment except Vercel production (previews, local and CI builds)
+// is kept out of search indexes as a whole; robots.txt also disallows
+// crawling there (src/lib/seo/indexing.ts).
+const deploymentHeaders = isIndexableDeployment(process.env.VERCEL_ENV)
+  ? []
+  : [{ source: "/:path*", headers: noIndexHeaders }];
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   images: {
@@ -59,6 +68,7 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       { source: "/:path*", headers: securityHeaders },
+      ...deploymentHeaders,
       { source: "/admin", headers: adminHeaders },
       { source: "/admin/:path*", headers: adminHeaders },
       { source: "/kassa/:path*", headers: checkoutHeaders },

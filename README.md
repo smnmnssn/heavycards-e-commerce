@@ -25,8 +25,9 @@ server-side logic. Market: Sweden only, Swedish UI, SEK.
 | 9 — Stripe webhooks        | Done   |
 | 10 — Transactional email   | Done   |
 | 11 — Verified reviews      | Done   |
-| 12 — Admin operations      | Review |
-| 13–15                      | —      |
+| 12 — Admin operations      | Done   |
+| 13 — SEO                   | Review |
+| 14–15                      | —      |
 
 Sections below marked _(later milestone)_ are placeholders and are filled in as
 those features land.
@@ -186,6 +187,11 @@ store settings (footer and checkout shipping follow) and role boundaries,
 also on a phone. They use `OPS-E2E-` products and orders, restore the store
 settings and delete their data again. To run only them:
 `npx playwright test --project admin-operations --no-deps`.
+
+The SEO tests (`e2e/seo.spec.ts`) are read-only and run in the storefront
+projects. The E2E build is not the Vercel production deployment, so they see
+the preview protection (`Disallow: /` and `X-Robots-Tag: noindex`); the
+production robots.txt is covered by unit tests.
 
 CI (`.github/workflows/ci.yml`) runs on every push to `main` and on pull requests:
 
@@ -504,6 +510,31 @@ DATABASE_URL=... npm run admin:create-owner -- --email owner@example.com --name 
 - run `npm run admin:create-owner` against an empty database.
 
 Sessions last 8 hours. Security design: docs/architecture.md → Milestone 6.
+
+## SEO
+
+Policy and details: [docs/routes.md → SEO](docs/routes.md#seo-milestone-13).
+
+**Automatic:** titles, meta descriptions, canonicals, Open Graph,
+structured data (products, ratings from approved reviews, breadcrumbs,
+store identity), the sitemap (`/sitemap.xml`), robots.txt, noindex for
+filters, search, archived products, empty categories/sets and private
+pages, and 308 redirects when a slug changes. Only the Vercel production
+deployment can be indexed; previews and local builds never.
+
+**What the store owner normally edits** (all optional; blank fields get a
+generated default, shown as the field's placeholder in admin):
+
+- category and set **Beskrivning**: the landing-page text, the most
+  valuable SEO content;
+- product name, short description and description, and image alt text;
+- SEO title and meta description on products, categories and sets, only
+  to override the default;
+- the homepage SEO title and description under Inställningar.
+
+When an information page gets real, reviewed content, set
+`indexable: true` for it in `src/lib/config/info-pages.ts`. Search Console
+and launch checks: docs/architecture.md → Milestone 13 → Manual SEO work.
 
 ## Deployment _(Milestone 15)_
 

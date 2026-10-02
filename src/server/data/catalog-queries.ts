@@ -319,31 +319,153 @@ export async function listSets(
   }));
 }
 
-const landingSelect = {
-  id: true,
-  slug: true,
-  name: true,
-  description: true,
-  seoTitle: true,
-  seoDescription: true,
-  updatedAt: true,
-} as const;
+const landingSelect = (now: Date) =>
+  ({
+    id: true,
+    slug: true,
+    name: true,
+    description: true,
+    seoTitle: true,
+    seoDescription: true,
+    updatedAt: true,
+    _count: { select: { products: { where: listableWhere(now) } } },
+  }) as const;
 
-export async function getCategoryBySlug(client: PrismaClient, slug: string) {
-  return client.category.findUnique({ where: { slug }, select: landingSelect });
+/**
+ * A category landing page. `listableProductCount` decides whether the page
+ * is worth indexing (an empty landing page is thin content).
+ */
+export async function getCategoryBySlug(
+  client: PrismaClient,
+  slug: string,
+  now: Date,
+) {
+  const category = await client.category.findUnique({
+    where: { slug },
+    select: landingSelect(now),
+  });
+  if (!category) return null;
+  const { _count, ...rest } = category;
+  return { ...rest, listableProductCount: _count.products };
 }
 
-export async function getSetBySlug(client: PrismaClient, slug: string) {
+export async function getSetBySlug(
+  client: PrismaClient,
+  slug: string,
+  now: Date,
+) {
   const set = await client.pokemonSet.findUnique({
     where: { slug },
-    select: { ...landingSelect, releaseDate: true },
+    select: { ...landingSelect(now), releaseDate: true },
   });
-  return set
-    ? {
-        ...set,
-        releaseDate: set.releaseDate ? toIsoDate(set.releaseDate) : null,
-      }
-    : null;
+  if (!set) return null;
+  const { _count, releaseDate, ...rest } = set;
+  return {
+    ...rest,
+    releaseDate: releaseDate ? toIsoDate(releaseDate) : null,
+    listableProductCount: _count.products,
+  };
+}
+
+// --- Sitemap --------------------------------------------------------------------
+
+/**
+ * Upper bound of product URLs in the sitemap. One sitemap file may hold
+ * 50 000 URLs; this leaves room for the landing and static pages. A catalog
+ * this large would split the sitemap with `generateSitemaps` instead.
+ */
+export const SITEMAP_PRODUCT_LIMIT = 45_000;
+
+export type SitemapData = {
+  products: Array<{ slug: string; updatedAt: Date; imageUrl: string | null }>;
+  categories: Array<{ slug: string; lastModified: Date }>;
+  sets: Array<{ slug: string; lastModified: Date }>;
+  /** Latest change of any listed product (listing pages' lastmod). */
+  catalogUpdatedAt: Date | null;
+};
+
+const latest = (...dates: Array<Date | null | undefined>): Date =>
+  new Date(Math.max(...dates.map((date) => date?.getTime() ?? 0)));
+
+/**
+ * Everything the sitemap lists, in bounded queries that select only what the
+ * sitemap needs: listable products (ACTIVE/COMING_SOON and published; never
+ * DRAFT or ARCHIVED) with their primary image, and the categories and sets
+ * that have at least one listable product, which is when their landing
+ * pages are indexable. A landing page's lastmod is the later of its own
+ * edit and the latest edit of a product listed on it.
+ */
+export async function getSitemapData(
+  client: PrismaClient,
+  now: Date,
+  productLimit = SITEMAP_PRODUCT_LIMIT,
+): Promise<SitemapData> {
+  const listable = listableWhere(now);
+  const [products, categories, sets, byCategory, bySet, overall] =
+    await Promise.all([
+      client.product.findMany({
+        where: listable,
+        orderBy: [{ publishedAt: "desc" }, { id: "desc" }],
+        take: productLimit,
+        select: {
+          slug: true,
+          updatedAt: true,
+          images: {
+            orderBy: [{ position: "asc" }, { createdAt: "asc" }],
+            take: 1,
+            select: { url: true },
+          },
+        },
+      }),
+      client.category.findMany({
+        where: { products: { some: listable } },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        select: { id: true, slug: true, updatedAt: true },
+      }),
+      client.pokemonSet.findMany({
+        where: { products: { some: listable } },
+        orderBy: [{ name: "asc" }],
+        select: { id: true, slug: true, updatedAt: true },
+      }),
+      client.product.groupBy({
+        by: ["categoryId"],
+        where: listable,
+        _max: { updatedAt: true },
+      }),
+      client.product.groupBy({
+        by: ["pokemonSetId"],
+        where: { ...listable, pokemonSetId: { not: null } },
+        _max: { updatedAt: true },
+      }),
+      client.product.aggregate({
+        where: listable,
+        _max: { updatedAt: true },
+      }),
+    ]);
+
+  const categoryProductsUpdated = new Map(
+    byCategory.map((row) => [row.categoryId, row._max.updatedAt]),
+  );
+  const setProductsUpdated = new Map(
+    bySet.map((row) => [row.pokemonSetId, row._max.updatedAt]),
+  );
+
+  return {
+    products: products.map(({ slug, updatedAt, images }) => ({
+      slug,
+      updatedAt,
+      imageUrl: images[0]?.url ?? null,
+    })),
+    categories: categories.map(({ id, slug, updatedAt }) => ({
+      slug,
+      lastModified: latest(updatedAt, categoryProductsUpdated.get(id)),
+    })),
+    sets: sets.map(({ id, slug, updatedAt }) => ({
+      slug,
+      lastModified: latest(updatedAt, setProductsUpdated.get(id)),
+    })),
+    catalogUpdatedAt: overall._max.updatedAt,
+  };
 }
 
 // --- Product page ---------------------------------------------------------------
@@ -362,6 +484,7 @@ export type ProductDetail = {
   id: string;
   slug: string;
   name: string;
+  sku: string;
   shortDescription: string | null;
   description: string | null;
   productType: ProductType;
@@ -402,6 +525,7 @@ export async function getProductBySlug(
       id: true,
       slug: true,
       name: true,
+      sku: true,
       shortDescription: true,
       description: true,
       productType: true,

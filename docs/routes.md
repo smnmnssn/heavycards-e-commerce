@@ -9,19 +9,19 @@ since published URLs need permanent redirects once live.
 
 All storefront routes below exist as of Milestone 4; `/review/[token]` since Milestone 11.
 
-| Route                        | Page                                                                                                                                                                  | Rendering | Indexable                |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ------------------------ |
-| `/`                          | Homepage with database-backed sections                                                                                                                                | ISR 60 s  | yes                      |
-| `/pokemon-tcg`               | Landing page: categories, full listing (set filter)                                                                                                                   | dynamic   | yes (unfiltered)         |
-| `/pokemon-tcg/[productSlug]` | Product page                                                                                                                                                          | ISR 60 s  | yes; archived: `noindex` |
-| `/kategori/[slug]`           | Category landing page                                                                                                                                                 | dynamic   | yes (unfiltered)         |
-| `/set/[slug]`                | Pokémon set landing page                                                                                                                                              | dynamic   | yes (unfiltered)         |
-| `/nyheter`                   | ACTIVE products published in the last 60 days                                                                                                                         | dynamic   | yes                      |
-| `/kommande`                  | COMING_SOON, preorders and future release dates                                                                                                                       | dynamic   | yes                      |
-| `/sok?q=…`                   | Search results                                                                                                                                                        | dynamic   | no                       |
-| `/review/[token]`            | Secure review page from the shipping email: the order's purchased products with one review form each; one generic page for every unusable link; rate-limited          | dynamic   | no                       |
-| `/kassa/bekraftelse`         | Stripe success URL: payment state from the database only (processing, paid with products and total, expired, failed); clears this browser's purchased items once paid | dynamic   | no                       |
-| `/kassa/avbruten`            | Stripe cancel URL: cart kept, "Visa kundvagnen"                                                                                                                       | ISR 60 s  | no                       |
+| Route                        | Page                                                                                                                                                                  | Rendering | Indexable                         |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | --------------------------------- |
+| `/`                          | Homepage with database-backed sections                                                                                                                                | ISR 60 s  | yes                               |
+| `/pokemon-tcg`               | Landing page: categories, full listing (set filter)                                                                                                                   | dynamic   | yes (unfiltered)                  |
+| `/pokemon-tcg/[productSlug]` | Product page                                                                                                                                                          | ISR 60 s  | yes; archived: `noindex`          |
+| `/kategori/[slug]`           | Category landing page                                                                                                                                                 | dynamic   | yes (unfiltered, if any products) |
+| `/set/[slug]`                | Pokémon set landing page                                                                                                                                              | dynamic   | yes (unfiltered, if any products) |
+| `/nyheter`                   | ACTIVE products published in the last 60 days                                                                                                                         | dynamic   | yes                               |
+| `/kommande`                  | COMING_SOON, preorders and future release dates                                                                                                                       | dynamic   | yes                               |
+| `/sok?q=…`                   | Search results                                                                                                                                                        | dynamic   | no                                |
+| `/review/[token]`            | Secure review page from the shipping email: the order's purchased products with one review form each; one generic page for every unusable link; rate-limited          | dynamic   | no                                |
+| `/kassa/bekraftelse`         | Stripe success URL: payment state from the database only (processing, paid with products and total, expired, failed); clears this browser's purchased items once paid | dynamic   | no                                |
+| `/kassa/avbruten`            | Stripe cancel URL: cart kept, "Visa kundvagnen"                                                                                                                       | ISR 60 s  | no                                |
 
 Unknown product, category and set slugs, draft or unpublished products, and
 page numbers beyond the last page return HTTP 404 with the store's 404 page.
@@ -43,24 +43,116 @@ are ignored rather than rejected.
 | `sida`           | 1–500                                                                            | all listings                  |
 | `q`              | search text, max 100 characters                                                  | `/sok`                        |
 
-### SEO behavior per page type
+### SEO (Milestone 13)
 
-| Page type      | Title / description                                                                       | Canonical                     | Robots                                   |
-| -------------- | ----------------------------------------------------------------------------------------- | ----------------------------- | ---------------------------------------- |
-| Homepage       | `StoreSettings.defaultSeoTitle/Description`, else generated                               | `/`                           | index                                    |
-| Product        | `seoTitle` → name; `seoDescription` → short description → description excerpt → generated | own URL                       | index; archived `noindex`                |
-| Category / set | `seoTitle` → "{name} – Pokémon TCG(-set)"; `seoDescription` → description → generated     | unfiltered URL                | index; filtered/sorted `noindex, follow` |
-| Listings       | fixed Swedish title and description                                                       | self (with `?sida=` when > 1) | index; filtered/sorted `noindex, follow` |
-| Search         | "Sökresultat för ”q”"                                                                     | `/sok`                        | `noindex, follow`                        |
+#### Indexing per page type
 
-- Titles use the "%s | HeavyCards" template.
+| Page                                       | Indexed                                                     | Canonical                       | Sitemap                        |
+| ------------------------------------------ | ----------------------------------------------------------- | ------------------------------- | ------------------------------ |
+| `/`                                        | yes                                                         | `/`                             | yes                            |
+| `/pokemon-tcg`, `/nyheter`, `/kommande`    | yes; filtered or re-sorted variants `noindex, follow`       | unfiltered URL (+ `?sida=` > 1) | unfiltered page 1              |
+| `/kategori/*`, `/set/*`                    | yes while it has a listable product, else `noindex, follow` | unfiltered URL (+ `?sida=` > 1) | when it has a listable product |
+| `/pokemon-tcg/[slug]` ACTIVE / COMING_SOON | yes                                                         | own URL (current slug)          | yes                            |
+| `/pokemon-tcg/[slug]` ARCHIVED             | `noindex, follow` (page kept for old links and orders)      | own URL                         | no                             |
+| `/pokemon-tcg/[slug]` DRAFT / unpublished  | — (HTTP 404)                                                | —                               | no                             |
+| `/sok`                                     | `noindex, follow`                                           | `/sok`                          | no                             |
+| Information pages                          | `noindex, follow` until `indexable: true` in their config   | own URL                         | once indexable                 |
+| `/kassa/**`, `/review/**`                  | `noindex, nofollow` (meta and `X-Robots-Tag`)               | —                               | no                             |
+| `/admin/**`, `/api/**`                     | `noindex, nofollow` (`X-Robots-Tag`), disallowed in robots  | —                               | no                             |
+| 404 and error pages                        | `noindex` (real 404/500 status)                             | —                               | no                             |
+
+"Listable" means ACTIVE or COMING_SOON with `publishedAt` set and not in the
+future (`isListable`). Sold-out products stay indexed: the page is still the
+best answer for the product, and its offer says `OutOfStock`. `/nyheter` and
+`/kommande` stay indexable when empty, because they are permanent navigation
+pages; empty categories and sets are not.
+
+#### Metadata fallbacks
+
+Stored fields always win; blank (or whitespace-only) fields fall back. The
+rules live in `src/lib/seo/catalog-defaults.ts` and are shared with the admin
+search previews.
+
+| Page     | Title                                                                          | Meta description                                                                                             |
+| -------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| Homepage | `StoreSettings.defaultSeoTitle` → "HeavyCards – Pokémon TCG i Sverige" (as-is) | `defaultSeoDescription` → fixed Swedish description                                                          |
+| Product  | `seoTitle` → product name                                                      | `seoDescription` → short description → description excerpt → "Köp {namn} hos HeavyCards, från setet {set} …" |
+| Category | `seoTitle` → "{namn} – Pokémon TCG"                                            | `seoDescription` → description → generated sentence                                                          |
+| Set      | `seoTitle` → "{namn} – Pokémon TCG-set"                                        | `seoDescription` → description → generated sentence                                                          |
+| Listings | fixed Swedish titles                                                           | fixed Swedish descriptions                                                                                   |
+
+- Titles get the "%s | HeavyCards" template (except the homepage); listing
+  pages after the first add " – sida N".
 - Descriptions are cut to 160 characters at a word boundary.
-- Every product, category and set page has visible breadcrumbs plus
-  BreadcrumbList JSON-LD.
-- Product pages also have basic Product/Offer JSON-LD, with AggregateRating
-  and reviews from approved reviews only.
-- Catalog slug redirects exist since Milestone 7. The sitemap, any wider
-  redirect handling and full structured data are completed in Milestone 13.
+- Every page states Open Graph `type`, `site_name`, `locale` (`sv_SE`), title,
+  description, URL and image: the product's primary image on product pages,
+  otherwise `/brand/heavycards-share.png` (1200×630). X/Twitter reads these;
+  only `twitter:card` is set separately. No third-party scripts.
+- `<html lang="sv">`, prices in SEK, no alternate-language URLs.
+- Category and set descriptions are the landing-page text: the first
+  paragraph leads the page, the full text follows the products (page 1).
+
+#### Canonicals and URL parameters
+
+- Canonicals are absolute (`metadataBase` = `APP_URL`) and always use the
+  current slug.
+- `sortering`, `kategori`, `set` and `tillganglighet` create filtered
+  variants: `noindex, follow`, canonical to the unfiltered listing. Customers
+  keep every filter; crawlers follow the products but index only the base
+  page. Filters are GET forms, not links, so crawlers rarely find variants.
+- `sida` is part of the canonical (page 2+ lists other products) and of the
+  title. Out-of-range pages are real 404s.
+- The default sort (`?sortering=nyast`), `?sida=1` and every unknown
+  parameter (`utm_*`, `gclid`, `fbclid`, …) are dropped from the canonical.
+- `q` only means something on `/sok`, which is never indexed.
+
+#### Structured data (JSON-LD)
+
+| Page                          | Types                                                                                                        |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Homepage                      | `Organization` (name, URL, raster logo; legal name and email once set in settings), `WebSite`                |
+| Product (not archived)        | `Product` with `Offer`; `AggregateRating` and up to 5 `Review`s from APPROVED reviews only; `BreadcrumbList` |
+| Category, set, `/pokemon-tcg` | `BreadcrumbList`; `CollectionPage` with an `ItemList` of the listed products (indexable variants only)       |
+| `/nyheter`, `/kommande`       | `BreadcrumbList`                                                                                             |
+
+- The offer uses the displayed price and the purchase panel's availability
+  (InStock, LimitedAvailability, OutOfStock, PreOrder with
+  `availabilityStarts` = the release date). COMING_SOON products without
+  preorder have no offer: there is nothing to buy yet.
+- `itemCondition: NewCondition` only for SEALED products.
+- Not emitted, because HeavyCards does not record them: brand, manufacturer,
+  GTIN/MPN, shipping details, return policy. No `SearchAction` (Google
+  retired the sitelinks search box).
+- Serialization escapes `<`, `>`, `&`, U+2028 and U+2029, so no content can
+  close the script element.
+
+#### Sitemap (`/sitemap.xml`)
+
+Generated from the database (`getSitemapData`, `buildSitemap`): the homepage,
+`/pokemon-tcg`, `/nyheter`, `/kommande`, categories and sets with a listable
+product, listable products (with their primary image) and published
+information pages. `lastmod` is a product's `updatedAt`, a landing page's
+latest own or product change, and the latest product change for listings.
+Cached for an hour and refreshed at once by every admin catalog change. At
+most 45 000 product URLs (one sitemap file holds 50 000); a larger catalog
+would split it with `generateSitemaps`.
+
+#### robots.txt and non-production deployments
+
+- **Vercel production** (`VERCEL_ENV=production`): `Allow: /`,
+  `Disallow: /admin` and `/api/`, plus the sitemap URL. `/kassa`, `/review`
+  and `/sok` stay crawlable on purpose, so crawlers can see their `noindex`
+  (a robots.txt block could still list a leaked token URL without content).
+- **Every other build** (Vercel previews, local, CI, E2E): `Disallow: /`, and
+  every response carries `X-Robots-Tag: noindex, nofollow`. Decided when the
+  deployment is built (`src/lib/seo/indexing.ts`).
+
+#### Slug changes
+
+Renamed products (once published), categories and sets answer their old URL
+with HTTP 308 to the new one; chains are flattened and loops prevented
+(Milestone 7, see database.md → Redirects). Deleted categories and sets
+redirect to `/pokemon-tcg`. Redirect sources are never in the sitemap.
 
 ### Product states on the storefront
 
@@ -82,8 +174,9 @@ are ignored rather than rejected.
 
 These routes exist from Milestone 3 as placeholder pages marked `noindex`. The
 store owner must write and review the content, and legal wording must be
-reviewed, before launch (PROJECT.md §71). Remove `noindex` when real content is
-published.
+reviewed, before launch (PROJECT.md §71). When a page has its real content,
+set `indexable: true` for it in `src/lib/config/info-pages.ts`: that removes
+`noindex` and adds it to the sitemap.
 
 | Route                  | Page                |
 | ---------------------- | ------------------- |

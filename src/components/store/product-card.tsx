@@ -45,12 +45,16 @@ export type ProductCardData = Readonly<{
  */
 export function ProductCard({
   product,
-  priority = false,
+  eager = false,
   className,
 }: {
   product: ProductCardData;
-  /** Set for above-the-fold cards (LCP candidates) only. */
-  priority?: boolean;
+  /**
+   * Load the image right away instead of lazily: for the first cards of a
+   * listing, which are in view on load. Not a preload: several cards are
+   * candidates and none is reliably the LCP element on every viewport.
+   */
+  eager?: boolean;
   className?: string;
 }) {
   const { image, badges = [], unavailable = false } = product;
@@ -64,7 +68,7 @@ export function ProductCard({
             alt={image.alt}
             width={image.width}
             height={image.height}
-            priority={priority}
+            loading={eager ? "eager" : "lazy"}
             sizes="(min-width: 80rem) 22vw, (min-width: 48rem) 30vw, 46vw"
             className={cn(
               "size-full object-contain p-[8%] transition-transform duration-500 ease-(--ease-out-soft) motion-safe:group-hover:scale-[1.03]",

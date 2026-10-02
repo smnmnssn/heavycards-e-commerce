@@ -6,14 +6,23 @@ import { useForm, useWatch, type Path } from "react-hook-form";
 
 import { saveStoreSettingsAction } from "@/app/admin/(panel)/settings/actions";
 import {
-  CharacterCount,
   describedBy,
   Field,
   FormSection,
 } from "@/components/admin/catalog/form-layout";
+import {
+  SeoFieldHint,
+  SeoPreview,
+} from "@/components/admin/catalog/seo-preview";
 import { FormAlert } from "@/components/admin/form-alert";
 import { Button } from "@/components/ui/button";
 import { Input, Select, Textarea } from "@/components/ui/form";
+import {
+  HOME_DEFAULT_DESCRIPTION,
+  HOME_DEFAULT_TITLE,
+  homeMetaDescription,
+  homeSeoTitle,
+} from "@/lib/seo/catalog-defaults";
 import {
   SEO_DESCRIPTION_MAX,
   SEO_DESCRIPTION_RECOMMENDED,
@@ -40,10 +49,12 @@ type Values = StoreSettingsFormValues;
 export function StoreSettingsForm({
   initialValues,
   configured,
+  siteUrl,
 }: {
   initialValues: Values;
   /** False on a fresh store without a settings row yet. */
   configured: boolean;
+  siteUrl: string;
 }) {
   const form = useForm<Values, unknown, Values>({
     resolver: zodResolver(storeSettingsFormSchema, undefined, { raw: true }),
@@ -241,27 +252,33 @@ export function StoreSettingsForm({
       <FormSection
         id="installningar-seo"
         title="Sökmotorer (startsidan)"
-        description="Startsidans titel och beskrivning i sökresultat. Lämna tomt för standardtexten."
+        description="Valfritt. Startsidans titel och beskrivning i Google och när länken delas. Lämna tomt för att använda standardtexten; det du skriver här ersätter den. Produkter, kategorier och set har egna fält."
       >
         <Field
           id={seoTitle.id}
-          label="SEO-titel"
+          label="SEO-titel (valfri)"
           hint={
-            <CharacterCount
-              length={values.defaultSeoTitle?.length ?? 0}
+            <SeoFieldHint
+              whenBlank="Tomt: standardtiteln används. Visas utan tillägg, så ta gärna med butikens namn."
+              length={values.defaultSeoTitle?.trim().length ?? 0}
               recommended={SEO_TITLE_RECOMMENDED}
             />
           }
           error={seoTitle.error}
         >
-          <Input {...seoTitle.props} maxLength={SEO_TITLE_MAX} />
+          <Input
+            {...seoTitle.props}
+            maxLength={SEO_TITLE_MAX}
+            placeholder={HOME_DEFAULT_TITLE}
+          />
         </Field>
         <Field
           id={seoDescription.id}
-          label="Metabeskrivning"
+          label="Metabeskrivning (valfri)"
           hint={
-            <CharacterCount
-              length={values.defaultSeoDescription?.length ?? 0}
+            <SeoFieldHint
+              whenBlank="Tomt: standardbeskrivningen används."
+              length={values.defaultSeoDescription?.trim().length ?? 0}
               recommended={SEO_DESCRIPTION_RECOMMENDED}
             />
           }
@@ -272,8 +289,19 @@ export function StoreSettingsForm({
             rows={3}
             className="min-h-24"
             maxLength={SEO_DESCRIPTION_MAX}
+            placeholder={HOME_DEFAULT_DESCRIPTION}
           />
         </Field>
+        <SeoPreview
+          title={homeSeoTitle({
+            defaultSeoTitle: values.defaultSeoTitle ?? null,
+          })}
+          description={homeMetaDescription({
+            defaultSeoDescription: values.defaultSeoDescription ?? null,
+          })}
+          url={`${siteUrl}/`}
+          absoluteTitle
+        />
       </FormSection>
 
       <div className="flex flex-wrap items-center gap-4">

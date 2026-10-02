@@ -20,3 +20,19 @@ export const brandAssets: Readonly<{ mark: LogoAsset }> = {
     height: 684,
   },
 };
+
+/**
+ * Raster renderings of the official mark (unchanged shape, generated from
+ * heavycards-mark.svg with sharp), for places that cannot use the SVG mask:
+ * - `share`: white mark on black, 1200×630, the default social-preview image
+ *   for pages without product imagery (Open Graph);
+ * - `logo`: black mark on white, 512×512, the Organization logo in
+ *   structured data (search engines want a raster logo of at least 112 px).
+ */
+export const brandRasterAssets: Readonly<{
+  share: LogoAsset;
+  logo: LogoAsset;
+}> = {
+  share: { src: "/brand/heavycards-share.png", width: 1200, height: 630 },
+  logo: { src: "/brand/heavycards-logo.png", width: 512, height: 512 },
+};

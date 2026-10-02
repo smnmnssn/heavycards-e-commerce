@@ -3,17 +3,21 @@ import { notFound } from "next/navigation";
 
 import { Breadcrumbs } from "@/components/store/breadcrumbs";
 import { PageHeader } from "@/components/store/headings";
+import { JsonLdScript } from "@/components/store/json-ld";
 import { ProductListing } from "@/components/store/product-listing";
 import { Badge } from "@/components/ui/badge";
 import { ButtonLink } from "@/components/ui/button";
 import { Container } from "@/components/ui/container";
-import { pageMetadata } from "@/lib/seo/metadata";
+import { env } from "@/lib/env/server";
+import { breadcrumbJsonLd } from "@/lib/seo/json-ld";
+import { pagedTitle, pageMetadata } from "@/lib/seo/metadata";
 import { loadListing } from "@/server/catalog/listing";
 import {
   listingHref,
   parseListingParams,
 } from "@/server/domain/catalog-params";
 
+const BREADCRUMBS = [{ label: "Hem", href: "/" }, { label: "Kommande" }];
 const PATH = "/kommande";
 
 export async function generateMetadata({
@@ -21,7 +25,7 @@ export async function generateMetadata({
 }: PageProps<"/kommande">): Promise<Metadata> {
   const { page } = parseListingParams(await searchParams);
   return pageMetadata({
-    title: "Kommande Pokémon TCG-släpp",
+    title: pagedTitle("Kommande Pokémon TCG-släpp", page),
     description:
       "Kommande Pokémon TCG-produkter och förbeställningar hos HeavyCards, med släppdatum.",
     path: listingHref(PATH, { page }),
@@ -47,9 +51,8 @@ export default async function UpcomingPage({
 
   return (
     <Container className="py-10 sm:py-14">
-      <Breadcrumbs
-        items={[{ label: "Hem", href: "/" }, { label: "Kommande" }]}
-      />
+      <JsonLdScript data={breadcrumbJsonLd(env.siteUrl, BREADCRUMBS)} />
+      <Breadcrumbs items={BREADCRUMBS} />
       <PageHeader
         className="mt-8"
         eyebrow="Släppkalender"

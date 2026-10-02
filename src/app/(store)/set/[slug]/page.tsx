@@ -5,26 +5,29 @@ import { Breadcrumbs } from "@/components/store/breadcrumbs";
 import { CatalogToolbar } from "@/components/store/catalog-toolbar";
 import { PageHeader } from "@/components/store/headings";
 import { JsonLdScript } from "@/components/store/json-ld";
+import { LandingText } from "@/components/store/landing-text";
 import { ProductListing } from "@/components/store/product-listing";
 import { ButtonLink } from "@/components/ui/button";
 import { Container } from "@/components/ui/container";
 import { setPath } from "@/lib/catalog-paths";
 import { formatIsoDate, stockholmToday } from "@/lib/dates";
 import { env } from "@/lib/env/server";
-import { breadcrumbJsonLd } from "@/lib/seo/json-ld";
+import { breadcrumbJsonLd, collectionPageJsonLd } from "@/lib/seo/json-ld";
 import {
   setFallbackDescription,
   setMetaDescription,
   setSeoTitle,
 } from "@/lib/seo/catalog-defaults";
-import { excerpt, firstText, pageMetadata } from "@/lib/seo/metadata";
+import { pagedTitle, pageMetadata } from "@/lib/seo/metadata";
 import {
+  LISTING_PAGE_SIZE,
   loadFilterOptions,
   loadListing,
   sanitizeFilters,
   toOptions,
 } from "@/server/catalog/listing";
 import { notFoundUnlessMoved } from "@/server/catalog/not-found";
+import { landingCopy } from "@/server/catalog/presenters";
 import { getSet } from "@/server/data/catalog";
 import {
   listingHref,
@@ -40,12 +43,14 @@ export async function generateMetadata({
   const set = await getSet(slug);
   if (!set) return {};
 
+  const listingParams = parseListingParams(await searchParams);
   const seo = listingSeo(
-    `/set/${slug}`,
-    parseListingParams(await searchParams),
+    setPath(slug),
+    listingParams,
+    set.listableProductCount,
   );
   return pageMetadata({
-    title: setSeoTitle(set),
+    title: pagedTitle(setSeoTitle(set), listingParams.page),
     description: setMetaDescription(set),
     path: seo.canonical,
     index: seo.index,
@@ -61,10 +66,11 @@ export default async function SetPage({
   if (!set) return notFoundUnlessMoved(setPath(slug));
 
   const now = new Date();
-  const path = `/set/${slug}`;
+  const path = setPath(slug);
   const options = await loadFilterOptions(now);
+  const rawParams = parseListingParams(await searchParams);
   const listingParams = sanitizeFilters(
-    { ...parseListingParams(await searchParams), setSlug: undefined },
+    { ...rawParams, setSlug: undefined },
     options,
   );
   const listing = await loadListing({
@@ -81,10 +87,29 @@ export default async function SetPage({
     { label: "Pokémon TCG", href: "/pokemon-tcg" },
     { label: set.name },
   ];
+  const copy = landingCopy(set.description, setFallbackDescription(set.name));
+  const indexable = listingSeo(path, rawParams, set.listableProductCount).index;
 
   return (
     <Container className="py-10 sm:py-14">
-      <JsonLdScript data={breadcrumbJsonLd(env.siteUrl, breadcrumbs)} />
+      <JsonLdScript
+        data={[
+          breadcrumbJsonLd(env.siteUrl, breadcrumbs),
+          ...(indexable
+            ? [
+                collectionPageJsonLd({
+                  siteUrl: env.siteUrl,
+                  path: listingHref(path, { page: listing.page }),
+                  name: set.name,
+                  description: setMetaDescription(set),
+                  numberOfItems: listing.total,
+                  offset: (listing.page - 1) * LISTING_PAGE_SIZE,
+                  items: listing.cards,
+                }),
+              ]
+            : []),
+        ]}
+      />
       <Breadcrumbs items={breadcrumbs} />
       <PageHeader
         className="mt-8"
@@ -100,12 +125,7 @@ export default async function SetPage({
                 </time>
               </span>
             )}
-            <span className="mt-2 block">
-              {excerpt(
-                firstText(set.description) ?? setFallbackDescription(set.name),
-                400,
-              )}
-            </span>
+            <span className="mt-2 block">{copy.lead}</span>
           </>
         }
       />
@@ -133,6 +153,9 @@ export default async function SetPage({
           }
         />
       </div>
+      {listing.page === 1 && (
+        <LandingText title={`Om ${set.name}`} paragraphs={copy.body} />
+      )}
     </Container>
   );
 }

@@ -6,6 +6,7 @@ import { StoreSettingsForm } from "@/components/admin/settings/store-settings-fo
 import { canManageStoreSettings } from "@/lib/auth/authorization";
 import { requireAdmin } from "@/lib/auth/session";
 import { db } from "@/lib/db/client";
+import { env } from "@/lib/env/server";
 import { formatSek } from "@/lib/money";
 import {
   SHIPPING_CARRIER_OPTIONS,
@@ -35,6 +36,7 @@ export default async function AdminSettingsPage() {
         <StoreSettingsForm
           initialValues={storeSettingsFormValues(settings)}
           configured={settings !== null}
+          siteUrl={env.siteUrl}
         />
       ) : (
         <SettingsSummary settings={settings} />

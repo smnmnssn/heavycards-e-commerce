@@ -3,6 +3,7 @@ import { Archivo } from "next/font/google";
 
 import { siteConfig } from "@/lib/config/site";
 import { env } from "@/lib/env/server";
+import { DEFAULT_SHARE_IMAGE, OPEN_GRAPH_LOCALE } from "@/lib/seo/metadata";
 
 import "./globals.css";
 
@@ -16,6 +17,8 @@ const archivo = Archivo({
   display: "swap",
 });
 
+// Defaults for pages without their own metadata. Storefront pages state
+// theirs through `pageMetadata` (src/lib/seo/metadata.ts).
 export const metadata: Metadata = {
   metadataBase: new URL(env.siteUrl),
   title: {
@@ -26,9 +29,11 @@ export const metadata: Metadata = {
   applicationName: siteConfig.brandName,
   openGraph: {
     siteName: siteConfig.brandName,
-    locale: "sv_SE",
+    locale: OPEN_GRAPH_LOCALE,
     type: "website",
+    images: [DEFAULT_SHARE_IMAGE],
   },
+  twitter: { card: "summary_large_image" },
 };
 
 export const viewport: Viewport = {

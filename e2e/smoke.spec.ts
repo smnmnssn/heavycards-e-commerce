@@ -49,7 +49,9 @@ test.describe("smoke", () => {
     expect(headers["content-security-policy"]).toBe("frame-ancestors 'none'");
     expect(headers["referrer-policy"]).toBe("strict-origin-when-cross-origin");
     expect(headers["x-powered-by"]).toBeUndefined();
-    expect(headers["x-robots-tag"]).toBeUndefined();
+    // E2E runs a local build, which is never the production deployment:
+    // the whole site is kept out of indexes (Milestone 13).
+    expect(headers["x-robots-tag"]).toBe("noindex, nofollow");
   });
 
   test("health endpoint reports ok and is not indexable", async ({

@@ -34,8 +34,12 @@ import {
 } from "@/lib/validation/catalog";
 
 import { FormAlert } from "../form-alert";
-import { CharacterCount, describedBy, Field, FormSection } from "./form-layout";
-import { SeoPreview } from "./seo-preview";
+import { describedBy, Field, FormSection } from "./form-layout";
+import {
+  SEO_SECTION_DESCRIPTION,
+  SeoFieldHint,
+  SeoPreview,
+} from "./seo-preview";
 
 type Values = CategoryFormValues & Partial<PokemonSetFormValues>;
 
@@ -165,6 +169,14 @@ export function TaxonomyForm({
     seoDescription: values.seoDescription ?? null,
     description: values.description ?? null,
   };
+  const autoTitle =
+    kind === "category"
+      ? categorySeoTitle({ ...seoInput, seoTitle: null })
+      : setSeoTitle({ ...seoInput, seoTitle: null });
+  const autoDescription =
+    kind === "category"
+      ? categoryMetaDescription({ ...seoInput, seoDescription: null })
+      : setMetaDescription({ ...seoInput, seoDescription: null });
   const currentSlug = values.slug?.trim() || "…";
   const slugChanged = Boolean(id) && currentSlug !== savedSlug;
 
@@ -212,7 +224,7 @@ export function TaxonomyForm({
         <Field
           id={description.id}
           label="Beskrivning (valfri)"
-          hint="Visas överst på sidan i butiken. Tom rad ger nytt stycke."
+          hint="Sidans text i butiken: första stycket visas överst, resten under produkterna. Några stycken om vad sidan innehåller gör den mer användbar för kunder och i sökresultat. Tom rad ger nytt stycke."
           error={description.error}
         >
           <Textarea {...description.props} className="min-h-32" />
@@ -245,26 +257,33 @@ export function TaxonomyForm({
       <FormSection
         id={`${kind}-seo`}
         title="Sökmotorer (SEO)"
-        description="Valfritt. Tomma fält ersätts automatiskt."
+        description={SEO_SECTION_DESCRIPTION}
       >
         <Field
           id={seoTitle.id}
-          label="SEO-titel"
+          label="SEO-titel (valfri)"
           hint={
-            <CharacterCount
+            <SeoFieldHint
+              whenBlank="Tomt: namnet följt av ”Pokémon TCG”."
               length={values.seoTitle?.trim().length ?? 0}
               recommended={SEO_TITLE_RECOMMENDED}
             />
           }
           error={seoTitle.error}
         >
-          <Input {...seoTitle.props} maxLength={200} autoComplete="off" />
+          <Input
+            {...seoTitle.props}
+            maxLength={200}
+            autoComplete="off"
+            placeholder={autoTitle}
+          />
         </Field>
         <Field
           id={seoDescription.id}
-          label="Metabeskrivning"
+          label="Metabeskrivning (valfri)"
           hint={
-            <CharacterCount
+            <SeoFieldHint
+              whenBlank="Tomt: början av beskrivningen, annars en standardtext."
               length={values.seoDescription?.trim().length ?? 0}
               recommended={SEO_DESCRIPTION_RECOMMENDED}
             />
@@ -275,6 +294,7 @@ export function TaxonomyForm({
             {...seoDescription.props}
             maxLength={500}
             className="min-h-24"
+            placeholder={autoDescription}
           />
         </Field>
         <SeoPreview

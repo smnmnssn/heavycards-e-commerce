@@ -143,12 +143,22 @@ export type ListingSeo = { canonical: string; index: boolean };
 /**
  * Duplicate-content control for listing variants (PROJECT.md §65):
  * - unfiltered pages (and their pagination) are indexable and self-canonical;
+ *   page 2+ keeps its own canonical, since it lists different products;
  * - filtered or re-sorted variants are `noindex, follow` and point their
  *   canonical at the unfiltered listing, so crawlers follow the products
- *   without indexing thousands of combinations.
+ *   without indexing thousands of combinations;
+ * - parameters the listing does not know (utm_*, gclid, …) never reach the
+ *   canonical, so tracking links consolidate on the clean URL;
+ * - a category or set landing page without any listable product
+ *   (`listableProductCount` 0) is `noindex, follow` until it has products:
+ *   an empty page is thin content. It also stays out of the sitemap.
  */
-export function listingSeo(path: string, params: ListingParams): ListingSeo {
-  if (hasFilterOrSort(params)) {
+export function listingSeo(
+  path: string,
+  params: ListingParams,
+  listableProductCount?: number,
+): ListingSeo {
+  if (hasFilterOrSort(params) || listableProductCount === 0) {
     return { canonical: path, index: false };
   }
   return { canonical: listingHref(path, { page: params.page }), index: true };

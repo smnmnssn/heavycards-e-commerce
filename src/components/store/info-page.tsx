@@ -2,22 +2,24 @@ import type { Metadata } from "next";
 
 import { Container } from "@/components/ui/container";
 import { infoPages, type InfoPageSlug } from "@/lib/config/info-pages";
+import { pageMetadata } from "@/lib/seo/metadata";
 
 import { Breadcrumbs } from "./breadcrumbs";
 import { PageHeader } from "./headings";
 
 /**
  * Placeholder pages stay out of search results until the owner has written
- * and reviewed the real content (PROJECT.md §71).
+ * and reviewed the real content (PROJECT.md §71) and the page is marked
+ * `indexable` in its config.
  */
 export function infoPageMetadata(slug: InfoPageSlug): Metadata {
   const page = infoPages[slug];
-  return {
+  return pageMetadata({
     title: page.title,
     description: page.description,
-    alternates: { canonical: `/${slug}` },
-    robots: { index: false, follow: true },
-  };
+    path: `/${slug}`,
+    index: page.indexable,
+  });
 }
 
 /** Template for information and legal pages: breadcrumbs, title, prose. */

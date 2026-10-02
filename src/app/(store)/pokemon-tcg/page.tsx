@@ -10,9 +10,10 @@ import { CategoryTiles } from "@/components/store/taxonomy-links";
 import { ButtonLink } from "@/components/ui/button";
 import { Container } from "@/components/ui/container";
 import { env } from "@/lib/env/server";
-import { breadcrumbJsonLd } from "@/lib/seo/json-ld";
-import { pageMetadata } from "@/lib/seo/metadata";
+import { breadcrumbJsonLd, collectionPageJsonLd } from "@/lib/seo/json-ld";
+import { pagedTitle, pageMetadata } from "@/lib/seo/metadata";
 import {
+  LISTING_PAGE_SIZE,
   loadFilterOptions,
   loadListing,
   sanitizeFilters,
@@ -27,6 +28,7 @@ import {
 
 const PATH = "/pokemon-tcg";
 const TITLE = "Pokémon TCG";
+const SEO_TITLE = "Pokémon TCG – booster boxes, ETB och mer";
 const DESCRIPTION =
   "Förseglade Pokémon TCG-produkter: booster boxes, Elite Trainer Boxes, booster packs, collection boxes och tins. Priser inklusive moms och leverans inom Sverige.";
 
@@ -38,7 +40,7 @@ export async function generateMetadata({
   const params = parseListingParams(await searchParams);
   const seo = listingSeo(PATH, params);
   return pageMetadata({
-    title: "Pokémon TCG – booster boxes, ETB och mer",
+    title: pagedTitle(SEO_TITLE, params.page),
     description: DESCRIPTION,
     path: seo.canonical,
     index: seo.index,
@@ -50,18 +52,34 @@ export default async function PokemonTcgPage({
 }: PageProps<"/pokemon-tcg">) {
   const now = new Date();
   const options = await loadFilterOptions(now);
-  const params = sanitizeFilters(
-    parseListingParams(await searchParams),
-    options,
-  );
+  const rawParams = parseListingParams(await searchParams);
+  const params = sanitizeFilters(rawParams, options);
   const listing = await loadListing({ params, defaultSort: "newest", now });
   if (params.page > listing.pageCount) notFound();
 
   const filtered = hasFilterOrSort(params);
+  const indexable = listingSeo(PATH, rawParams).index;
 
   return (
     <Container className="py-10 sm:py-14">
-      <JsonLdScript data={breadcrumbJsonLd(env.siteUrl, breadcrumbs)} />
+      <JsonLdScript
+        data={[
+          breadcrumbJsonLd(env.siteUrl, breadcrumbs),
+          ...(indexable
+            ? [
+                collectionPageJsonLd({
+                  siteUrl: env.siteUrl,
+                  path: listingHref(PATH, { page: listing.page }),
+                  name: TITLE,
+                  description: DESCRIPTION,
+                  numberOfItems: listing.total,
+                  offset: (listing.page - 1) * LISTING_PAGE_SIZE,
+                  items: listing.cards,
+                }),
+              ]
+            : []),
+        ]}
+      />
       <Breadcrumbs items={breadcrumbs} />
       <PageHeader
         className="mt-8"

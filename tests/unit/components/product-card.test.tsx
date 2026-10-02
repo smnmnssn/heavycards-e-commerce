@@ -55,6 +55,26 @@ describe("ProductCard", () => {
     expect(img?.sizes).toBeTruthy();
   });
 
+  it("loads images lazily unless the card is in view on load", () => {
+    const image = {
+      src: "/test/booster-box.webp",
+      alt: "Destined Rivals Booster Box",
+      width: 1200,
+      height: 1200,
+    };
+    const [lazy] = render(
+      <ProductCard product={{ ...product, image }} />,
+    ).elements("img");
+    const [eager] = render(
+      <ProductCard product={{ ...product, image }} eager />,
+    ).elements("img");
+
+    expect(lazy?.loading).toBe("lazy");
+    expect(eager?.loading).toBe("eager");
+    // Several cards compete for LCP, so none claims high fetch priority.
+    expect(eager).not.toHaveProperty("fetchpriority");
+  });
+
   it("shows caller-provided status badges", () => {
     const doc = render(
       <ProductCard

@@ -20,10 +20,25 @@ export function schemaPrice(amount: number): string {
 /** Most recent approved reviews included in structured data. */
 const MAX_JSON_LD_REVIEWS = 5;
 
+const RATING_SCALE = { bestRating: 5, worstRating: 1 } as const;
+
+/** Rounded like the visible summary ("4,5 av 5"): at most one decimal. */
+const roundRating = (rating: number) => Math.round(rating * 10) / 10;
+
 /**
- * Basic Product structured data (completed in Milestone 13). Mirrors the
- * visible page: the same price, availability and approved reviews only. No
- * offer is emitted while a product cannot be ordered yet (coming soon).
+ * Product structured data (PROJECT.md §63). Mirrors the visible page and the
+ * authoritative storefront data:
+ * - the offer uses the displayed price and the same availability state as
+ *   the purchase panel; no offer while a product cannot be ordered yet
+ *   (coming soon without preorder), since there is nothing to buy;
+ * - a preorder's offer starts on its displayed release date;
+ * - condition "new" is stated only for sealed products, the one type whose
+ *   condition is known by definition;
+ * - ratings and reviews come only from APPROVED reviews (the page's own
+ *   summary and list);
+ * - no brand, GTIN, shipping or return policy: HeavyCards does not record
+ *   them, so they are not claimed.
+ * Archived products have no structured data (their page is noindex).
  */
 export function productJsonLd({
   siteUrl,
@@ -43,10 +58,13 @@ export function productJsonLd({
   return {
     "@context": "https://schema.org",
     "@type": "Product",
+    "@id": `${url}#product`,
     name: product.name,
     description,
     url,
+    sku: product.sku,
     category: product.category.name,
+    ...(product.releaseDate ? { releaseDate: product.releaseDate } : {}),
     ...(product.images.length > 0
       ? {
           image: product.images.map((image) => absoluteUrl(siteUrl, image.url)),
@@ -60,7 +78,12 @@ export function productJsonLd({
             price: schemaPrice(product.priceAmount),
             priceCurrency: "SEK",
             availability,
-            itemCondition: "https://schema.org/NewCondition",
+            ...(state === "preorder" && product.releaseDate
+              ? { availabilityStarts: product.releaseDate }
+              : {}),
+            ...(product.productType === "SEALED"
+              ? { itemCondition: "https://schema.org/NewCondition" }
+              : {}),
           },
         }
       : {}),
@@ -68,10 +91,9 @@ export function productJsonLd({
       ? {
           aggregateRating: {
             "@type": "AggregateRating",
-            ratingValue: Math.round(averageRating * 10) / 10,
+            ratingValue: roundRating(averageRating),
             reviewCount: count,
-            bestRating: 5,
-            worstRating: 1,
+            ...RATING_SCALE,
           },
           review: product.reviews
             .slice(0, MAX_JSON_LD_REVIEWS)
@@ -84,8 +106,7 @@ export function productJsonLd({
               reviewRating: {
                 "@type": "Rating",
                 ratingValue: review.rating,
-                bestRating: 5,
-                worstRating: 1,
+                ...RATING_SCALE,
               },
             })),
         }

@@ -171,7 +171,7 @@ describe("categories", () => {
       }),
     ).toMatchObject({ ok: true, redirectCreated: true });
 
-    expect(await getCategoryBySlug(db, "booster-boxes")).toBeNull();
+    expect(await getCategoryBySlug(db, "booster-boxes", new Date())).toBeNull();
     expect(await findRedirectDestination(db, "/kategori/booster-boxes")).toBe(
       "/kategori/displayer",
     );
@@ -247,10 +247,12 @@ describe("Pokémon sets", () => {
       }),
     );
 
-    expect(await getSetBySlug(db, "destined-rivals")).toMatchObject({
-      releaseDate: "2025-06-06",
-      seoDescription: "Allt från Destined Rivals.",
-    });
+    expect(await getSetBySlug(db, "destined-rivals", new Date())).toMatchObject(
+      {
+        releaseDate: "2025-06-06",
+        seoDescription: "Allt från Destined Rivals.",
+      },
+    );
     expect(
       (
         await db.auditLog.findFirstOrThrow({

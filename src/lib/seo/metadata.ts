@@ -1,5 +1,11 @@
 import type { Metadata } from "next";
 
+import { brandRasterAssets } from "@/lib/config/brand";
+import { siteConfig } from "@/lib/config/site";
+
+/** `sv-SE` in Open Graph notation. */
+export const OPEN_GRAPH_LOCALE = "sv_SE";
+
 /*
  * Metadata helpers. Stored seoTitle/seoDescription always win; otherwise
  * defaults are generated from content so admins never have to write SEO
@@ -28,6 +34,26 @@ export function firstText(
   return undefined;
 }
 
+/** Listing pages after the first get distinct titles ("Tins – sida 2"). */
+export function pagedTitle(title: string, page = 1): string {
+  return page > 1 ? `${title} – sida ${page}` : title;
+}
+
+export type ShareImage = {
+  url: string;
+  width: number;
+  height: number;
+  alt: string;
+};
+
+/** Social preview for pages without product imagery: the brand mark. */
+export const DEFAULT_SHARE_IMAGE: ShareImage = {
+  url: brandRasterAssets.share.src,
+  width: brandRasterAssets.share.width,
+  height: brandRasterAssets.share.height,
+  alt: siteConfig.brandName,
+};
+
 type PageMetadataInput = {
   title: string;
   description: string;
@@ -35,10 +61,17 @@ type PageMetadataInput = {
   index?: boolean;
   /** Use the title as-is instead of appending "| HeavyCards". */
   absoluteTitle?: boolean;
-  images?: Array<{ url: string; width: number; height: number; alt: string }>;
+  /** Product imagery; the brand share image is used when omitted. */
+  images?: ShareImage[];
 };
 
-/** Consistent title, description, canonical, robots and Open Graph. */
+/**
+ * Consistent title, description, canonical, robots and Open Graph.
+ *
+ * Next.js replaces (does not merge) a parent's `openGraph` and `robots`, so
+ * every page states the shared Open Graph fields itself, and indexable pages
+ * leave `robots` out entirely instead of setting it to undefined.
+ */
 export function pageMetadata({
   title,
   description,
@@ -52,12 +85,18 @@ export function pageMetadata({
     title: absoluteTitle ? { absolute: title } : title,
     description: metaDescription,
     alternates: { canonical: path },
-    robots: index ? undefined : { index: false, follow: true },
+    ...(index ? {} : { robots: { index: false, follow: true } }),
     openGraph: {
+      type: "website",
+      siteName: siteConfig.brandName,
+      locale: OPEN_GRAPH_LOCALE,
       title,
       description: metaDescription,
       url: path,
-      images,
+      images: images ?? [DEFAULT_SHARE_IMAGE],
     },
+    // X/Twitter reads the Open Graph tags; only the card type is its own.
+    // Square packshots suit the small card, the 1.91:1 brand image the large.
+    twitter: { card: images ? "summary" : "summary_large_image" },
   };
 }

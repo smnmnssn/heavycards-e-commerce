@@ -20,6 +20,10 @@ export const getProductPage = cache((slug: string) =>
   getProductBySlug(db, slug, new Date()),
 );
 
-export const getCategory = cache((slug: string) => getCategoryBySlug(db, slug));
+export const getCategory = cache((slug: string) =>
+  getCategoryBySlug(db, slug, new Date()),
+);
 
-export const getSet = cache((slug: string) => getSetBySlug(db, slug));
+export const getSet = cache((slug: string) =>
+  getSetBySlug(db, slug, new Date()),
+);

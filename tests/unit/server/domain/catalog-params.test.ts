@@ -153,4 +153,37 @@ describe("listingSeo", () => {
       listingSeo("/pokemon-tcg", params({ sortering: "nyast" })).index,
     ).toBe(true);
   });
+
+  it("keeps tracking and unknown parameters out of the canonical", () => {
+    expect(
+      listingSeo(
+        "/kategori/tins",
+        params({
+          utm_source: "nyhetsbrev",
+          gclid: "abc",
+          fbclid: "x",
+          sida: "1",
+        }),
+      ),
+    ).toEqual({ canonical: "/kategori/tins", index: true });
+  });
+
+  it("noindexes a landing page without listable products", () => {
+    expect(listingSeo("/set/kommande-set", params({}), 0)).toEqual({
+      canonical: "/set/kommande-set",
+      index: false,
+    });
+    expect(listingSeo("/set/kommande-set", params({}), 3)).toEqual({
+      canonical: "/set/kommande-set",
+      index: true,
+    });
+  });
+
+  it("keeps search queries out of listing canonicals", () => {
+    // `q` only means something on /sok, which is never indexed; elsewhere it
+    // must not create indexable variants.
+    expect(
+      listingSeo("/pokemon-tcg", params({ q: "destined" })).canonical,
+    ).toBe("/pokemon-tcg");
+  });
 });

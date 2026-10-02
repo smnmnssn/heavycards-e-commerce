@@ -1,6 +1,10 @@
 import Image from "next/image";
 
-import { GALLERY_SIZES, type GalleryImage } from "./gallery-shared";
+import {
+  GALLERY_SIZES,
+  MAIN_IMAGE_LOADING,
+  type GalleryImage,
+} from "./gallery-shared";
 import { ImagePlaceholder } from "./image-placeholder";
 import { ProductGalleryInteractive } from "./product-gallery-interactive";
 
@@ -27,7 +31,7 @@ export function ProductGallery({
           width={image.width}
           height={image.height}
           sizes={GALLERY_SIZES}
-          priority
+          {...MAIN_IMAGE_LOADING}
           className="size-full object-contain p-[6%]"
         />
       </div>

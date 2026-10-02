@@ -166,6 +166,8 @@ describe("catalogRevalidationTargets", () => {
         { path: "/(store)/pokemon-tcg/[productSlug]", type: "page" },
         { path: "/(store)/kategori/[slug]", type: "page" },
         { path: "/(store)/set/[slug]", type: "page" },
+        // Publishing, archiving and slug changes change the sitemap.
+        { path: "/sitemap.xml" },
       ]),
     );
     // Information pages keep their own cache.

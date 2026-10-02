@@ -29,6 +29,10 @@ const LISTING_TARGETS: readonly RevalidationTarget[] = [
   { path: "/(store)/kategori/[slug]", type: "page" },
   { path: "/(store)/set/[slug]", type: "page" },
   { path: "/(store)/pokemon-tcg/[productSlug]", type: "page" },
+  // Products, categories and sets enter or leave the sitemap with these
+  // changes (publish, archive, slug change, a landing page gaining or losing
+  // its last product).
+  { path: "/sitemap.xml" },
 ];
 
 /**
