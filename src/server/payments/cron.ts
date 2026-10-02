@@ -5,6 +5,8 @@ import { releaseExpiredReservations } from "@/server/checkout/cleanup";
 import type { CheckoutGateway } from "@/server/checkout/gateway";
 import { logEmail } from "@/server/email/log";
 import { runEmailJobs, type EmailDeps } from "@/server/email/outbox";
+import { logSafe } from "@/server/logging/safe-log";
+import { pruneExpiredSecurityData } from "@/server/security/housekeeping";
 
 import { logPayment } from "./log";
 import { reconcileCheckouts } from "./reconcile";
@@ -31,7 +33,9 @@ export function isAuthorizedCronRequest(
  * 1. payments: reconcile unresolved Stripe checkouts and release lapsed
  *    provisional holds (src/server/payments/reconcile.ts);
  * 2. emails (when configured): enqueue missing order confirmations and
- *    dispatch due or retryable emails (src/server/email/outbox.ts).
+ *    dispatch due or retryable emails (src/server/email/outbox.ts);
+ * 3. housekeeping: delete expired security data such as raw client IPs in
+ *    auth rate limits (src/server/security/housekeeping.ts, Milestone 14).
  *
  * Payments run first, so orders they finalize get their confirmation in the
  * same run. Neither step can stop the other: a mail-provider outage only
@@ -88,6 +92,17 @@ export async function handleReconcileRequest(
       body.emails = { error: "failed" };
       failed = true;
     }
+  }
+
+  try {
+    body.housekeeping = await pruneExpiredSecurityData(
+      deps.db,
+      (deps.now ?? (() => new Date()))(),
+    );
+  } catch (error) {
+    logSafe("security", "error", "housekeeping failed", { error });
+    body.housekeeping = { error: "failed" };
+    failed = true;
   }
 
   const status = !deps.gateway ? 503 : failed ? 500 : 200;

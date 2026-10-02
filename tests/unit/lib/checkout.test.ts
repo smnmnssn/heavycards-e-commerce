@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   checkoutFailureMessage,
-  checkoutRequestSchema,
   isStripeCheckoutUrl,
 } from "@/lib/checkout/checkout";
+import { checkoutRequestSchema } from "@/lib/checkout/request-schema";
 import { formatPrice } from "@/lib/money";
 
 const ID = "01999999-0000-7000-8000-00000000000a";

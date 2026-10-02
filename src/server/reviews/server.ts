@@ -5,12 +5,15 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db/client";
 import { env } from "@/lib/env/server";
 import { logSafe } from "@/server/logging/safe-log";
-import { deriveReviewLinkKey } from "@/server/domain/review-token";
+import { reviewLinkKeyFromSecrets } from "@/server/domain/review-token";
 
 import { moderateReview, type ModerationResult } from "./moderation";
 
-/** Derives review URL tokens; from AUTH_SECRET, never logged or stored. */
-export const reviewLinkKey = deriveReviewLinkKey(env.authSecret);
+/**
+ * Derives review URL tokens from REVIEW_LINK_SECRET (AUTH_SECRET where that
+ * is not configured); never logged or stored.
+ */
+export const reviewLinkKey = reviewLinkKeyFromSecrets(env.reviewLinks);
 
 /**
  * Moderation for the admin UI (Milestone 12): the service, then a refresh

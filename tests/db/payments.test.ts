@@ -1089,6 +1089,13 @@ describe("GET /api/cron/reconcile-checkouts", () => {
       checked: 1,
       outcomes: { expired: 1 },
       provisionalReleased: 0,
+      // Milestone 14: expired security data is pruned in the same run.
+      housekeeping: {
+        rateLimitBuckets: 0,
+        authRateLimits: 0,
+        adminSessions: 0,
+        authVerifications: 0,
+      },
     });
     expect(revalidate).toHaveBeenCalledWith([box.slug]);
   });

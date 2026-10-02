@@ -7,6 +7,7 @@ import {
 } from "@/lib/security/tokens";
 import {
   deriveReviewLinkKey,
+  reviewLinkKeyFromSecrets,
   deriveReviewToken,
   isReviewTokenUsable,
   newReviewInvitation,
@@ -110,6 +111,71 @@ describe("review invitation tokens", () => {
   it("builds the customer path from the raw token only", () => {
     const token = generateSecureToken();
     expect(reviewPath(token)).toBe(`/review/${token}`);
+  });
+});
+
+describe("review-link key transition (Milestone 14)", () => {
+  const AUTH = "unit-test-auth-secret-0123456789abcdef";
+  const DEDICATED = "unit-test-review-link-secret-0123456789";
+
+  it("still renders links of invitations created with AUTH_SECRET", () => {
+    const legacy = newReviewInvitation(deriveReviewLinkKey(AUTH), now);
+    const ring = reviewLinkKeyFromSecrets({
+      reviewLinkSecret: DEDICATED,
+      previousReviewLinkSecret: null,
+      authSecret: AUTH,
+    });
+
+    expect(rawReviewToken(ring, legacy)).toBe(
+      rawReviewToken(deriveReviewLinkKey(AUTH), legacy),
+    );
+  });
+
+  it("creates new invitations with the dedicated key only", () => {
+    const ring = reviewLinkKeyFromSecrets({
+      reviewLinkSecret: DEDICATED,
+      previousReviewLinkSecret: null,
+      authSecret: AUTH,
+    });
+    const invitation = newReviewInvitation(ring, now);
+
+    expect(rawReviewToken(deriveReviewLinkKey(DEDICATED), invitation)).toBe(
+      rawReviewToken(ring, invitation),
+    );
+    expect(rawReviewToken(deriveReviewLinkKey(AUTH), invitation)).toBeNull();
+  });
+
+  it("keeps links of the previous dedicated secret renderable after a rotation", () => {
+    const old = "old-review-link-secret-0123456789abcdef";
+    const before = newReviewInvitation(deriveReviewLinkKey(old), now);
+    const ring = reviewLinkKeyFromSecrets({
+      reviewLinkSecret: DEDICATED,
+      previousReviewLinkSecret: old,
+      authSecret: AUTH,
+    });
+
+    expect(rawReviewToken(ring, before)).not.toBeNull();
+    // Without the previous secret the old invitation cannot be rendered.
+    expect(
+      rawReviewToken(
+        reviewLinkKeyFromSecrets({
+          reviewLinkSecret: DEDICATED,
+          previousReviewLinkSecret: null,
+          authSecret: AUTH,
+        }),
+        before,
+      ),
+    ).toBeNull();
+  });
+
+  it("uses AUTH_SECRET when no dedicated secret is configured (development)", () => {
+    const ring = reviewLinkKeyFromSecrets({
+      reviewLinkSecret: null,
+      previousReviewLinkSecret: null,
+      authSecret: AUTH,
+    });
+    expect(ring.bytes.equals(deriveReviewLinkKey(AUTH).bytes)).toBe(true);
+    expect(ring.previous).toHaveLength(0);
   });
 });
 

@@ -1879,9 +1879,10 @@ None added. `resend` 6.31.0 (Milestone 6) already supports
    Apple Mail.
 6. Decide who watches `EMAIL_NEEDS_ATTENTION` audit entries until the
    Milestone 12 order view shows them. To resend a FAILED email after
-   checking in the Resend dashboard that it was not delivered, set its row
-   back to `PENDING` with `next_attempt_at = now()` (a deliberate operator
-   action). An explicit resend feature is out of scope for V1.
+   checking in the Resend dashboard that it was not delivered, use
+   `npm run ops -- requeue-email` (Milestone 14; editing the row by hand
+   did not reset the unknown-outcome clock). An explicit resend feature is
+   out of scope for V1.
 7. On a Vercel Pro plan, schedule the cron every 15 minutes.
 
 ## Milestone 11 — Verified purchase reviews (2026-10-02)
@@ -2367,8 +2368,9 @@ the refunded amount and status, a link to the payment, and the sentence
 - **Remaining limit:** if Stripe keeps reporting a state HeavyCards cannot
   accept (e.g. a paid amount that differs from the order), the hold remains
   and the problem stays open. Refunding in Stripe does not change the
-  session's state; releasing such a hold remains a deliberate developer
-  decision.
+  session's state; Milestone 14 added the OWNER-authenticated operator
+  command `npm run ops -- release-payment-hold`, which releases it only on
+  Stripe's proof that the money was returned.
 
 ### Email state and resends
 
@@ -2380,8 +2382,8 @@ The order page and dashboard show the outbox state. A manual resend was
 - after Resend's 24-hour key window, a resend cannot be deduplicated.
 
 The page tells staff to check Resend and contact the customer directly. The
-Milestone 10 operator procedure (setting the row back to PENDING after
-checking Resend) remains the escape hatch.
+operator command `npm run ops -- requeue-email` (Milestone 14) is the
+escape hatch after checking Resend.
 
 ### Reviews (`/admin/reviews`)
 
@@ -2754,3 +2756,252 @@ black and black on white) and are committed as static assets.
 - When the information and legal pages have reviewed content, set
   `indexable: true` for them in `src/lib/config/info-pages.ts`.
 - Optional: a custom homepage SEO title and description in Inställningar.
+
+## Milestone 14 — Security, reliability and production hardening (2026-10-02)
+
+A review of the whole system, targeted fixes for what it found, and the
+operational baseline in [production-readiness.md](production-readiness.md)
+(protections, manual launch work, accepted limits, runbooks, personal data).
+No customer-facing features were added. Schema change: one column, one
+index and three CHECK constraints (migration `20261002200000_hardening`).
+
+### Audit summary
+
+Reviewed: storefront, cart, checkout and reservations, Stripe webhooks,
+reconciliation and refunds, the email outbox, reviews, admin authentication
+and every admin action/service, uploads, redirects/SEO, cron/internal
+routes, environment validation, headers, logging, data retention and
+dependencies. The payment state machine, webhook verification and
+idempotency, the outbox's leasing, upload validation, IDOR surfaces and
+server-side authorization were found sound and are unchanged.
+
+| Finding                                                                                                                                                    | Severity | Change                                                             |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------ |
+| One checkout request can reserve 99 units of up to 50 products for ~55 minutes; nothing limited open holds per client                                      | High     | Per-client open-hold caps (below)                                  |
+| Staff could cancel a PENDING order whose Stripe session was still payable; a later payment became PAID + CANCELLED: money taken, nothing shipped, no alert | High     | Cancelling requires a payment outcome; DB constraint               |
+| No Content-Security-Policy beyond `frame-ancestors`                                                                                                        | Medium   | Storefront CSP; nonce CSP for admin; COOP                          |
+| Documented recovery for FAILED emails ("set it to PENDING") failed again at once for unknown outcomes                                                      | Medium   | `npm run ops -- requeue-email`                                     |
+| No safe way out of a hold Stripe and HeavyCards cannot reconcile (M12 limit)                                                                               | Medium   | `npm run ops -- release-payment-hold`, on Stripe's proof of refund |
+| Full Zod (~90 KB gzipped) in every storefront page's JavaScript                                                                                            | Medium   | Zod kept out of the client bundle                                  |
+| Raw client IPs in `auth_rate_limits` and expired admin sessions (IP, user agent) kept forever                                                              | Medium   | Daily housekeeping                                                 |
+| Review links derived from `AUTH_SECRET` (rotating it after an incident affects shipping emails)                                                            | Low      | Dedicated `REVIEW_LINK_SECRET` with lossless transition            |
+| Production accepted a local `APP_URL`/`DATABASE_URL`                                                                                                       | Low      | Refused in Vercel production                                       |
+| Password-reset failure logged `error.message`; storage-deletion failure omitted the keys an operator needs                                                 | Low      | `logSafe`; keys logged                                             |
+| Rate-limit refusals were never logged                                                                                                                      | Low      | First refusal per client and window logged                         |
+| Refund state and fulfillment rules enforced only in code                                                                                                   | Low      | CHECK constraints                                                  |
+
+### Inventory-hold abuse (Milestone 9's open question)
+
+Stripe Checkout sessions live at least 30 minutes and HeavyCards keeps the
+stock reserved until Stripe answers (Milestone 9), so time alone cannot stop
+someone from making products look sold out. Options considered: captcha or
+bot services (paid/third-party, PROJECT.md avoids them), per-product
+purchase limits (a business decision PROJECT.md does not make), shorter
+sessions (Stripe's minimum leaves ~5 minutes to gain), per-client caps.
+
+Chosen: caps per client, the HMAC of the client IP already used for rate
+limiting (`clientKey`), stored on the order (`orders.checkout_client_key`,
+indexed, cleared when the order leaves PENDING):
+
+- at most **3 open unpaid checkouts** and **30 held units** per client
+  (`exceededHoldLimit`, `src/server/domain/checkout.ts`). A browser has one
+  open attempt (a new attempt supersedes the previous one), so three cover a
+  second device or a few people behind one address; 30 units is far above a
+  normal sealed-product order;
+- checked inside the reservation transaction under
+  `pg_advisory_xact_lock(hashtextextended(clientKey))`, taken before the
+  product locks (one global lock order), so simultaneous requests cannot
+  exceed the cap together (mutation-tested: without the lock 8 parallel
+  requests opened more than 3). The attempt is looked up again after the lock, so a double submission of one new attempt reuses its order instead of counting it against the cap;
+- a repeated submission of an existing attempt is never capped; provisional
+  holds that lapsed and holds ended by Stripe (paid, expired, failed) or by
+  superseding free the allowance;
+- refusal: HTTP 429 `hold_limit` with `Retry-After`, a Swedish message in
+  the drawer, and `[checkout] open-hold limit reached` in the log (no IP).
+
+Not changed: holds still end only on Stripe's answer; the M8/M9 delayed-
+webhook guarantee is intact (the DB tests for it pass unchanged). A
+distributed actor with many addresses is not stopped (accepted, with
+platform mitigations listed in production-readiness.md).
+
+### Pending orders cannot be cancelled
+
+`fulfillmentAllowedForPayment(CANCELLED, PENDING)` is now false; the admin
+page no longer offers it and the service answers `PAYMENT_NOT_SETTLED` with
+a message pointing to "Kontrollera med Stripe igen". A pending order ends
+through Stripe's outcome. Unpaid closed orders (EXPIRED/FAILED) may still be
+cancelled (harmless).
+
+### Database invariants
+
+- `orders_pending_unfulfilled_check`: PENDING ⇒ fulfillment NEW.
+- `orders_fulfillment_requires_payment_check`: PROCESSING, SHIPPED and
+  COMPLETED only for PAID, PARTIALLY_REFUNDED or REFUNDED.
+- `orders_refunded_amount_state_check`: PAID and unpaid states have
+  `refunded_amount = 0`; PARTIALLY_REFUNDED strictly between 0 and the total;
+  REFUNDED equals the total. (Named to sort after
+  `orders_refunded_amount_check`; PostgreSQL checks constraints in name
+  order, so an over-refund still reports the more specific constraint.)
+
+Existing data satisfied them. No further constraints were added: the other
+cross-table rules (e.g. CONSUMED reservations only for paid orders) are
+guarded by the single writer under row locks and are covered by tests.
+Indexes for the order list, dashboard, reconciliation and outbox queries
+were reviewed; only `orders(checkout_client_key)` was added.
+
+### Payment-truth operator procedures
+
+`scripts/operator.ts` (`npm run ops`), run by a developer with production
+access for an OWNER:
+
+- authenticates an **active OWNER** with their admin password (Better Auth's
+  `verifyPassword`, hidden prompt, terminal only), shows what it found, and
+  requires typing the order number;
+- `release-payment-hold` (`src/server/operations/payment-hold.ts`): only for
+  a PENDING order with an open `PAYMENT_NEEDS_ATTENTION` that holds stock,
+  and only when Stripe shows the money returned in full (succeeded refunds ≥
+  the charged amount, same currency) or never taken (PaymentIntent
+  canceled). Open or processing sessions, expired/failed sessions (the
+  normal recheck handles them) and any money kept are refused. It releases
+  the reservations, sets FAILED (final), stores the PaymentIntent ID (later
+  refund events then find the order and leave it alone) and audits
+  `OPERATOR_RELEASE_PAYMENT_HOLD` with the OWNER, the problem codes, the
+  evidence and a short note;
+- `requeue-email` (`src/server/operations/email-requeue.ts`): only a FAILED
+  delivery whose order is still eligible and not marked sent; resets
+  attempts, the unknown-outcome clock, lease and error in one guarded update
+  and audits `OPERATOR_REQUEUE_EMAIL`. The idempotency key stays the same, so
+  within Resend's 24 hours a duplicate is still impossible.
+
+There is still no admin button that releases stock.
+
+### Content-Security-Policy
+
+`src/lib/security/content-security-policy.ts` builds both policies.
+
+- Storefront (`next.config.ts`, every path except `/admin` and
+  `/admin/**`): `default-src 'self'`, `script-src 'self' 'unsafe-inline'`,
+  `style-src 'self' 'unsafe-inline'`, `img-src 'self' data: blob:`,
+  `connect-src 'self'`, `object-src`/`frame-src 'none'`, `base-uri 'self'`,
+  `form-action 'self'`, `frame-ancestors 'none'`. Nonces would force every
+  page to render dynamically and give up ISR (Next.js documents this), which
+  the SEO and caching design depends on.
+- Admin (`src/proxy.ts`): a 128-bit nonce per request with
+  `'strict-dynamic'`, passed to Next.js through the request's CSP header;
+  `src/app/admin/layout.tsx` calls `connection()` so every admin page
+  renders per request (previously `/admin/forgot-password` was static).
+- `'unsafe-eval'` only under `next dev`. No third-party origin is allowed;
+  adding analytics or an embed means extending the policy deliberately.
+- Also: `Cross-Origin-Opener-Policy: same-origin`, `payment=()`/`usb=()` in
+  `Permissions-Policy`. HSTS stays with Vercel (checked at launch).
+- E2E collects the browser's CSP violations while the storefront (browse,
+  add to cart, drawer) and the admin (sign-in, every main screen, a client
+  form) are used: none.
+
+### Review-link secret
+
+`REVIEW_LINK_SECRET` (≥ 32 characters, required in Vercel production, must
+differ from `AUTH_SECRET`) now derives review links; outside production
+`AUTH_SECRET` is used when it is unset. Decoupling means an incident-driven
+`AUTH_SECRET` rotation no longer touches review emails, and the key has one
+purpose. Transition without breaking anything: links are verified by hash
+lookup, so delivered links never depend on the key; for rendering,
+`reviewLinkKeyFromSecrets` keeps `REVIEW_LINK_SECRET_PREVIOUS` and
+`AUTH_SECRET` as fallback keys, so a shipping email still waiting when the
+secret is introduced or rotated renders the same link (DB-tested). New
+invitations always use the current key.
+
+The token stays in the URL path. Its exposure is limited to hosting access
+logs; the page shows no customer data, a token only allows a moderated
+review, and the CSP now enforces "no third-party resources". A fragment-
+based link would need JavaScript and a second link format; not worth it for
+V1 (production-readiness.md lists the log-access controls instead).
+
+### Client bundle
+
+The cart drawer imported `src/lib/checkout/checkout.ts` for messages and the
+Stripe URL check; that module also held the Zod request schema, and
+`src/lib/cart/cart.ts` parsed the stored cart with Zod. Every storefront page
+therefore loaded a 382 KB (90 KB gzipped) Zod chunk. The schema moved to
+`src/lib/checkout/request-schema.ts` (imported only by the server; the
+client keeps type-only imports), and the stored cart is parsed by a small
+hand-written check whose UUID pattern is exactly Zod's `z.uuid()` (unit
+tests compare both). The homepage now loads 197 KB of gzipped JavaScript
+with no Zod. Admin forms and the review form still use Zod, on their own
+pages.
+
+### Other changes
+
+- **Environment:** Vercel production refuses local `APP_URL` and
+  `DATABASE_URL` hosts; `REVIEW_LINK_SECRET(_PREVIOUS)` validated.
+- **Logging:** rate-limit refusals (`[security]`, once per window and
+  client, scope only); hold-limit refusals; password-reset failures and
+  storage-deletion failures through `logSafe` (the latter with the object
+  keys for manual cleanup).
+- **Housekeeping** (`src/server/security/housekeeping.ts`), a third,
+  independent step of the scheduled job: deletes rate-limit windows older
+  than a day, Better Auth rate-limit rows (raw IPs) older than a day,
+  expired admin sessions and spent password-reset values.
+- **CI:** `npm audit --audit-level=critical`.
+- `scripts/lib/terminal.ts`: the hidden password prompt shared by the
+  bootstrap and operator scripts.
+
+### Decisions not to change
+
+- **Orphaned storage objects:** no automatic cleanup. A failed deletion is
+  rare, leaves an unguessable public product photo without personal data,
+  and is now logged with its key for manual deletion. A sweeper would need
+  a provider listing API and its own failure handling.
+- **Read-only public endpoints** (`/api/cart`, search) get no application
+  rate limit: they are bounded per request, and a database write per request
+  to count them would itself be the load during a flood. Vercel Firewall is
+  the place for volumetric limits (Milestone 15).
+- **Login brute force:** no per-account lockout (lockout would be a denial
+  of service against the owner); per-IP limits, 12-character passwords and
+  future 2FA.
+- **Duplicate `Location` header** and **"destination stream closed early"**:
+  both traced to Next.js 16.3.8 and reproduced; evidence in
+  production-readiness.md → Investigated warnings.
+
+### Testing
+
+- **Unit:** CSP builder; proxy nonce (fresh per request, forwarded to
+  Next.js, on public admin pages too); hold-limit rule and Swedish messages;
+  operator order-number parsing and history sentences (operator note never
+  shown); env rules (review secrets, local hosts, no echo of values); review
+  key fallbacks and rotation; stored-cart parsing parity with Zod; the
+  CANCELLED payment rule.
+- **DB** (`tests/db/checkout-abuse.test.ts`, `hardening.test.ts`,
+  `operations.test.ts`): open-checkout and unit caps, other clients
+  unaffected, repeated attempts, superseding, holds freed by Stripe outcomes
+  and the client key cleared, crashed checkouts, concurrency, a double submission of one attempt at the cap's edge (reused, not refused), the last unit,
+  the HTTP 429 without logging the IP; the three constraints; a pending
+  order cannot be cancelled and then pays normally; an expiry event for a
+  paid session finalizes; five event orderings (completed, expired, async
+  failure, refund events, duplicates) converging on REFUNDED with one stock
+  decrement, no restock and one confirmation; refunds for a never-accepted
+  checkout; a demoted OWNER's live session refused by every OWNER service; a
+  deactivated session; rate-limit logging; a review link rendered across the
+  secret transition; housekeeping; the release procedure (refused while
+  money is kept or partly refunded or a refund is pending, released on full
+  refund with audit, later events harmless, canceled payment, flags and
+  states, ADMIN and inactive OWNER refused); the email requeue (the old
+  manual procedure failing, the command sending once, refusals); OWNER
+  authentication. Existing tests adjusted: an over-refund fixture, an
+  idempotency fixture now moves to PARTIALLY_REFUNDED, the checkout rate-
+  limit test distinguishes `rate_limited` from `hold_limit`, the new PENDING
+  message, the cron summary includes housekeeping.
+- **E2E** (`e2e/security.spec.ts`, desktop and phone): exact storefront CSP
+  and hardening headers on four pages; admin nonce policy, a different nonce
+  per response and every script carrying it; no-store, noindex and
+  no-referrer on private pages; zero CSP violations in storefront and admin
+  use; generic answers without internals for broken JSON, client totals,
+  forged webhook signatures, cron without secret, unauthenticated upload,
+  path traversal and sign-up. `checkout.spec.ts`: the drawer explains the
+  open-checkout cap. The smoke test's exact CSP assertion became a
+  `frame-ancestors` check.
+
+### Dependencies
+
+None added. `npm audit` unchanged (4 high in the Prisma CLI, accepted; see
+production-readiness.md → Dependencies).

@@ -34,8 +34,15 @@ export function canTransitionFulfillment(
 /**
  * Payment precondition for a fulfillment target. Work on an order (handling,
  * shipping) only starts once HeavyCards considers it paid and not fully
- * refunded. Completing an already shipped order and cancelling are always
- * possible, whatever happened to the payment since.
+ * refunded. Completing an already shipped order is always possible,
+ * whatever happened to the payment since.
+ *
+ * Cancelling is possible once the payment has an outcome, but never while
+ * it is PENDING (Milestone 14): Stripe may still complete that checkout, and
+ * a payment arriving for a cancelled order would be taken without anything
+ * being shipped or flagged. A pending order ends through Stripe's answer
+ * (paid, expired or failed), never through a fulfillment change. The
+ * database enforces the same rule (orders_pending_unfulfilled_check).
  */
 export function fulfillmentAllowedForPayment(
   to: FulfillmentStatus,
@@ -44,5 +51,6 @@ export function fulfillmentAllowedForPayment(
   if (to === "PROCESSING" || to === "SHIPPED") {
     return paymentStatus === "PAID" || paymentStatus === "PARTIALLY_REFUNDED";
   }
+  if (to === "CANCELLED") return paymentStatus !== "PENDING";
   return true;
 }

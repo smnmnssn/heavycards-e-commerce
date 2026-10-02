@@ -19,6 +19,8 @@ import { createPrismaClient } from "@/lib/db/create-client";
 import { MIN_PASSWORD_LENGTH } from "@/lib/auth/policy";
 import { bootstrapOwner } from "@/server/admin/bootstrap";
 
+import { promptHidden, readPiped } from "./lib/terminal";
+
 if (!process.env.DATABASE_URL && existsSync(".env.local")) {
   process.loadEnvFile(".env.local");
 }
@@ -26,42 +28,6 @@ if (!process.env.DATABASE_URL && existsSync(".env.local")) {
 function fail(message: string): never {
   console.error(`✗ ${message}`);
   process.exit(1);
-}
-
-/** Reads a line from the terminal without echoing it. Paste works. */
-function promptHidden(question: string): Promise<string> {
-  const { stdin, stdout } = process;
-  return new Promise((resolve, reject) => {
-    let value = "";
-    const finish = (error?: Error) => {
-      stdin.off("data", onData);
-      stdin.setRawMode(false);
-      stdin.pause();
-      stdout.write("\n");
-      if (error) reject(error);
-      else resolve(value);
-    };
-    const onData = (chunk: string) => {
-      for (const char of chunk) {
-        if (char === "\r" || char === "\n") return finish();
-        if (char === "\u0003") return finish(new Error("Avbrutet."));
-        if (char === "\u007f" || char === "\b") value = value.slice(0, -1);
-        else value += char;
-      }
-    };
-    stdout.write(question);
-    stdin.setEncoding("utf8");
-    stdin.setRawMode(true);
-    stdin.resume();
-    stdin.on("data", onData);
-  });
-}
-
-async function readPiped(): Promise<string> {
-  let input = "";
-  process.stdin.setEncoding("utf8");
-  for await (const chunk of process.stdin) input += chunk;
-  return input.split(/\r?\n/, 1)[0] ?? "";
 }
 
 async function readPassword(): Promise<string> {

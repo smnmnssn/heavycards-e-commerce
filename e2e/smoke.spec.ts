@@ -46,7 +46,10 @@ test.describe("smoke", () => {
 
     expect(headers["x-content-type-options"]).toBe("nosniff");
     expect(headers["x-frame-options"]).toBe("DENY");
-    expect(headers["content-security-policy"]).toBe("frame-ancestors 'none'");
+    // The full policy is checked in e2e/security.spec.ts (Milestone 14).
+    expect(headers["content-security-policy"]).toContain(
+      "frame-ancestors 'none'",
+    );
     expect(headers["referrer-policy"]).toBe("strict-origin-when-cross-origin");
     expect(headers["x-powered-by"]).toBeUndefined();
     // E2E runs a local build, which is never the production deployment:

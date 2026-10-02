@@ -6,8 +6,8 @@ import { after } from "next/server";
 import { db } from "@/lib/db/client";
 import { passwordResetEmail } from "@/lib/email/templates";
 import { emailTransport } from "@/lib/email/server";
-import { maskEmail } from "@/lib/email/transport";
 import { env } from "@/lib/env/server";
+import { logSafe } from "@/server/logging/safe-log";
 
 import { createAuth } from "./config";
 import { ADMIN_RESET_PASSWORD_PATH } from "./routes";
@@ -31,10 +31,12 @@ export const auth = createAuth({
       try {
         await emailTransport.send(message);
       } catch (error) {
-        console.error(
-          `[auth] password reset email to ${maskEmail(user.email)} failed:`,
-          error instanceof Error ? error.message : "unknown error",
-        );
+        // The error is reduced to its name: a message could echo the
+        // recipient or, from a file transport, the link with its token.
+        logSafe("auth", "error", "password reset email failed", {
+          adminUserId: user.id,
+          error,
+        });
       }
     });
   },

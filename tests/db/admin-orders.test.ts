@@ -568,7 +568,7 @@ describe("fulfillment through the shared service", () => {
     ).toEqual({
       status: "error",
       message:
-        "Betalningen har status väntar på betalning, så beställningen kan inte behandlas eller skickas. Avbryt den i stället om den inte ska levereras.",
+        "Betalningen pågår fortfarande hos Stripe, så beställningen kan inte ändras ännu. Den avslutas av sig själv när kunden betalar eller kassan går ut. Använd ”Kontrollera med Stripe igen” om den väntat länge.",
     });
 
     const fresh = await order();

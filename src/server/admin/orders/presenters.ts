@@ -274,6 +274,16 @@ export function describeOrderEvent(action: string, metadata: unknown): string {
           : "problem";
       return `Markerat som hanterat (${what}).`;
     }
+    case "OPERATOR_RELEASE_PAYMENT_HOLD":
+      return str(meta, "evidence") === "payment_canceled"
+        ? "Reservationen släpptes av en ägare: Stripe visar att betalningen avbröts. Beställningen avslutades utan betalning."
+        : "Reservationen släpptes av en ägare: Stripe visar att betalningen är helt återbetald. Beställningen avslutades utan betalning.";
+    case "OPERATOR_REQUEUE_EMAIL":
+      return `E-postmeddelandet (${
+        str(meta, "kind") === "ORDER_SHIPPED"
+          ? "leveransbesked"
+          : "orderbekräftelse"
+      }) lades i kö igen av en ägare.`;
     default:
       return `Händelse: ${action}`;
   }

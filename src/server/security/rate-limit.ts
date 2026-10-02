@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 
 import type { PrismaClient } from "@/generated/prisma/client";
+import { logSafe } from "@/server/logging/safe-log";
 
 /*
  * Fixed-window rate limiting in PostgreSQL, shared by every serverless
@@ -58,13 +59,22 @@ export function clientIp(headers: Headers): string {
   return forwarded || headers.get("x-real-ip")?.trim() || "unknown";
 }
 
+/**
+ * Pseudonymous client identifier: an HMAC of the client IP keyed with the
+ * application secret (40 hex characters). Used for rate-limit counters and
+ * for the open-checkout caps (src/server/domain/checkout.ts); the IP itself
+ * is never stored or logged.
+ */
+export function clientKey(ip: string, secret: string): string {
+  return createHmac("sha256", secret).update(ip).digest("hex").slice(0, 40);
+}
+
 export function rateLimitKey(
   rule: RateLimitRule,
   ip: string,
   secret: string,
 ): string {
-  const digest = createHmac("sha256", secret).update(ip).digest("hex");
-  return `${rule.scope}:${digest.slice(0, 40)}`;
+  return `${rule.scope}:${clientKey(ip, secret)}`;
 }
 
 export async function consumeRateLimit(
@@ -86,7 +96,17 @@ export async function consumeRateLimit(
     1,
     Math.ceil((windowStart.getTime() + rule.windowMs - now.getTime()) / 1000),
   );
-  return { allowed: (row?.count ?? 0) <= rule.limit, retryAfterSeconds };
+  const count = row?.count ?? 0;
+  if (count === rule.limit + 1) {
+    // Once per client and window, so a flood cannot flood the log. Only the
+    // scope: the key is pseudonymous but still identifies a client.
+    logSafe("security", "info", "rate limit reached", {
+      scope: rule.scope,
+      limit: rule.limit,
+      windowSeconds: rule.windowMs / 1000,
+    });
+  }
+  return { allowed: count <= rule.limit, retryAfterSeconds };
 }
 
 export async function pruneRateLimits(

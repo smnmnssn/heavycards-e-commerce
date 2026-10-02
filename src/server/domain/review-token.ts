@@ -16,16 +16,22 @@ import { generateSecureToken, hashToken } from "@/lib/security/tokens";
  *   rawToken  = HMAC-SHA256(reviewLinkKey, nonce), never stored
  *   tokenHash = SHA-256(rawToken), stored and used for lookups
  *
- * `reviewLinkKey` is derived from AUTH_SECRET (HKDF with its own label, so
- * it is independent of every other use of that secret). Consequences:
+ * `reviewLinkKey` is derived (HKDF with its own label) from
+ * REVIEW_LINK_SECRET, a secret used for nothing else (Milestone 14; before
+ * that, and still outside production when it is unset, from AUTH_SECRET).
+ * Consequences:
  * - every render re-derives the same URL, so retries never mint new links;
  * - a database copy alone (nonce + hash) yields no working link: the key
  *   lives only in the environment;
  * - the raw token is unpredictable without the key, and HMAC output is
  *   indistinguishable from 256 random bits;
  * - verification needs no key: the URL token is hashed and looked up.
- *   Rotating AUTH_SECRET therefore keeps delivered links working; only an
- *   email not yet sent at that moment can no longer render its link.
+ *   Rotating the secret therefore keeps delivered links working.
+ * - rendering needs the key the invitation was created with. Previous keys
+ *   (the old secret after a rotation, or AUTH_SECRET for invitations created
+ *   before REVIEW_LINK_SECRET existed) are kept as fallbacks, so a shipping
+ *   email still waiting to be sent renders the same link. New invitations
+ *   always use the current key.
  */
 
 /**
@@ -38,21 +44,38 @@ export const REVIEW_TOKEN_TTL_DAYS = 180;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const KEY_LABEL = "heavycards/review-link/v1";
 
-/** Opaque key for deriving review tokens. Never log or serialize it. */
-export type ReviewLinkKey = { readonly bytes: Buffer };
+/**
+ * Opaque key for deriving review tokens: the current key and, for rendering
+ * links of older invitations only, previous ones. Never log or serialize it.
+ */
+export type ReviewLinkKey = {
+  readonly bytes: Buffer;
+  readonly previous: readonly Buffer[];
+};
 
-export function deriveReviewLinkKey(authSecret: string): ReviewLinkKey {
-  const bytes = Buffer.from(
-    hkdfSync("sha256", authSecret, "heavycards", KEY_LABEL, 32),
-  );
-  return Object.freeze({ bytes });
+const keyBytes = (secret: string) =>
+  Buffer.from(hkdfSync("sha256", secret, "heavycards", KEY_LABEL, 32));
+
+export function deriveReviewLinkKey(
+  secret: string,
+  { previousSecrets = [] }: { previousSecrets?: readonly string[] } = {},
+): ReviewLinkKey {
+  return Object.freeze({
+    bytes: keyBytes(secret),
+    previous: Object.freeze(
+      previousSecrets.filter((old) => old !== secret).map(keyBytes),
+    ),
+  });
 }
 
-/** The raw URL token for a stored nonce (43 characters, base64url). */
-export function deriveReviewToken(key: ReviewLinkKey, nonce: string): string {
-  return createHmac("sha256", key.bytes)
+const tokenFor = (bytes: Buffer, nonce: string) =>
+  createHmac("sha256", bytes)
     .update(`review-token:${nonce}`, "utf8")
     .digest("base64url");
+
+/** The raw URL token for a stored nonce under the current key (43 characters). */
+export function deriveReviewToken(key: ReviewLinkKey, nonce: string): string {
+  return tokenFor(key.bytes, nonce);
 }
 
 export type NewReviewInvitation = {
@@ -75,15 +98,19 @@ export function newReviewInvitation(
 }
 
 /**
- * The raw token of a stored invitation, or null when it cannot be derived
- * any more (AUTH_SECRET was rotated after the invitation was created).
+ * The raw token of a stored invitation, derived with whichever known key it
+ * was created with; null when none matches (the secret it was created with
+ * is no longer configured).
  */
 export function rawReviewToken(
   key: ReviewLinkKey,
   stored: { nonce: string; tokenHash: string },
 ): string | null {
-  const rawToken = deriveReviewToken(key, stored.nonce);
-  return hashToken(rawToken) === stored.tokenHash ? rawToken : null;
+  for (const bytes of [key.bytes, ...key.previous]) {
+    const rawToken = tokenFor(bytes, stored.nonce);
+    if (hashToken(rawToken) === stored.tokenHash) return rawToken;
+  }
+  return null;
 }
 
 export function isReviewTokenUsable(
@@ -95,3 +122,27 @@ export function isReviewTokenUsable(
 
 /** Customer-facing path of a review link. */
 export const reviewPath = (rawToken: string) => `/review/${rawToken}`;
+
+/**
+ * The application's review-link key from its configured secrets: the
+ * dedicated REVIEW_LINK_SECRET when set (with the previous one and
+ * AUTH_SECRET as rendering fallbacks for older invitations), otherwise
+ * AUTH_SECRET, as before Milestone 14. Production requires the dedicated
+ * secret (src/lib/env/schema.ts).
+ */
+export function reviewLinkKeyFromSecrets({
+  reviewLinkSecret,
+  previousReviewLinkSecret,
+  authSecret,
+}: {
+  reviewLinkSecret: string | null;
+  previousReviewLinkSecret: string | null;
+  authSecret: string;
+}): ReviewLinkKey {
+  if (!reviewLinkSecret) return deriveReviewLinkKey(authSecret);
+  return deriveReviewLinkKey(reviewLinkSecret, {
+    previousSecrets: [previousReviewLinkSecret, authSecret].filter(
+      (secret): secret is string => Boolean(secret),
+    ),
+  });
+}

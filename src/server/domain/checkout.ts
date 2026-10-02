@@ -222,3 +222,37 @@ export function matchesOrderLines(
     );
   });
 }
+
+// --- Open holds per client (Milestone 14) ------------------------------------
+
+/*
+ * A checkout reserves stock for the whole Stripe session (40 minutes plus
+ * grace, PROJECT.md §26), and Stripe's own minimum session lifetime is 30
+ * minutes, so time alone cannot stop someone from holding stock without
+ * paying. These caps bound what one client (the HMAC of its IP address,
+ * shared with rate limiting) can hold at once:
+ *
+ * - a customer has one open checkout per browser (a new attempt supersedes
+ *   the previous one), so three leave room for a second device or a few
+ *   people on one network (a household, an office, mobile carrier NAT);
+ * - 30 units across those checkouts is far above a normal sealed-product
+ *   order while keeping one client from reserving a whole release.
+ *
+ * Holds end as usual (payment, expiry, failure, superseding), which frees
+ * the client's allowance again. A distributed actor with many addresses is
+ * not stopped by this; see docs/production-readiness.md.
+ */
+export const MAX_OPEN_CHECKOUTS_PER_CLIENT = 3;
+export const MAX_HELD_UNITS_PER_CLIENT = 30;
+
+export type ClientHolds = { checkouts: number; units: number };
+
+/** Which cap a new checkout of `requestedUnits` would exceed, if any. */
+export function exceededHoldLimit(
+  open: ClientHolds,
+  requestedUnits: number,
+): "checkouts" | "units" | null {
+  if (open.checkouts >= MAX_OPEN_CHECKOUTS_PER_CLIENT) return "checkouts";
+  if (open.units + requestedUnits > MAX_HELD_UNITS_PER_CLIENT) return "units";
+  return null;
+}

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import {
   addToCart,
@@ -293,5 +294,50 @@ describe("evaluateCart", () => {
       }),
     });
     expect(withUnavailable.conflict).toBeNull();
+  });
+});
+
+describe("stored cart parsing without Zod (Milestone 14)", () => {
+  const stored = (lines: unknown, v: unknown = 1) =>
+    JSON.stringify({ v, lines });
+
+  it("accepts exactly the product IDs the server's z.uuid() accepts", () => {
+    const candidates = [
+      "01999999-0000-7000-8000-00000000000a",
+      "01999999-0000-7000-8000-00000000000A",
+      "01999999-0000-0000-8000-00000000000a", // version 0
+      "01999999-0000-7000-c000-00000000000a", // wrong variant
+      "00000000-0000-0000-0000-000000000000",
+      "ffffffff-ffff-ffff-ffff-ffffffffffff",
+      "not-a-uuid",
+      " 01999999-0000-7000-8000-00000000000a",
+    ];
+    for (const id of candidates) {
+      const kept = parseStoredCart(stored([{ id, q: 1 }])).lines.length === 1;
+      expect(kept, id).toBe(z.uuid().safeParse(id).success);
+    }
+  });
+
+  it.each([
+    ["an array instead of an object", "[]"],
+    ["a wrong version", stored([], 2)],
+    ["lines that are not a list", JSON.stringify({ v: 1, lines: {} })],
+    [
+      "more than 500 stored lines",
+      stored(Array.from({ length: 501 }, () => ({ id: "x", q: 1 }))),
+    ],
+  ])("returns an empty cart for %s", (_label, raw) => {
+    expect(parseStoredCart(raw)).toEqual(emptyCart);
+  });
+
+  it.each([
+    [{ id: "01999999-0000-7000-8000-00000000000a", q: 1.5 }],
+    [{ id: "01999999-0000-7000-8000-00000000000a", q: 0 }],
+    [{ id: "01999999-0000-7000-8000-00000000000a", q: "2" }],
+    [{ id: "01999999-0000-7000-8000-00000000000a", q: 2 ** 60 }],
+    [["01999999-0000-7000-8000-00000000000a", 1]],
+    [null],
+  ])("drops the invalid line %j", (line) => {
+    expect(parseStoredCart(stored([line])).lines).toEqual([]);
   });
 });

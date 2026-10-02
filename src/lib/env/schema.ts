@@ -40,6 +40,16 @@ const rawServerEnvSchema = z.object({
   AUTH_SECRET: z
     .string({ error: "required" })
     .min(32, "must be at least 32 characters (e.g. openssl rand -base64 32)"),
+  REVIEW_LINK_SECRET: optionalNonEmpty(
+    z
+      .string()
+      .min(32, "must be at least 32 characters (e.g. openssl rand -base64 32)"),
+  ),
+  REVIEW_LINK_SECRET_PREVIOUS: optionalNonEmpty(
+    z
+      .string()
+      .min(32, "must be at least 32 characters (e.g. openssl rand -base64 32)"),
+  ),
   EMAIL_TRANSPORT: optionalNonEmpty(z.enum(["resend", "console", "file"])),
   RESEND_API_KEY: optionalNonEmpty(
     z.string().regex(/^re_\S+$/, "must be a Resend API key (re_…)"),
@@ -147,6 +157,17 @@ const isPlaceholderSenderDomain = (domain: string) =>
   /(^|\.)example\.(com|net|org)$/.test(domain) ||
   /\.(invalid|test|example|localhost|local)$/.test(domain);
 
+/**
+ * Secrets for review links (src/server/domain/review-token.ts). Production
+ * requires the dedicated REVIEW_LINK_SECRET; elsewhere AUTH_SECRET is used
+ * when it is unset.
+ */
+export type ReviewLinkSecrets = Readonly<{
+  reviewLinkSecret: string | null;
+  previousReviewLinkSecret: string | null;
+  authSecret: string;
+}>;
+
 export type ServerEnv = Readonly<{
   nodeEnv: "development" | "test" | "production";
   vercelEnv: "development" | "preview" | "production" | undefined;
@@ -156,6 +177,8 @@ export type ServerEnv = Readonly<{
   databaseUrl: string;
   /** Signs auth cookies and tokens. Secret: never log it. */
   authSecret: string;
+  /** Review-link key material. Secret: never log it. */
+  reviewLinks: ReviewLinkSecrets;
   email: EmailConfig;
   storage: StorageConfig;
   payments: PaymentConfig;
@@ -197,6 +220,11 @@ function resolveSiteUrl(
         "APP_URL: must be an origin without path, query or fragment",
       );
     }
+    if (env.VERCEL_ENV === "production" && isLoopbackHost(url.hostname)) {
+      return new Error(
+        "APP_URL: must be the public domain in the Vercel production environment",
+      );
+    }
     return url.origin;
   }
 
@@ -210,6 +238,52 @@ function resolveSiteUrl(
     return new Error("APP_URL: required for production builds and servers");
   }
   return LOCAL_DEVELOPMENT_URL;
+}
+
+const isLoopbackHost = (hostname: string) =>
+  hostname === "localhost" ||
+  hostname.endsWith(".localhost") ||
+  hostname === "[::1]" ||
+  hostname === "::1" ||
+  hostname.startsWith("127.");
+
+function resolveDatabase(
+  env: z.infer<typeof rawServerEnvSchema>,
+): string | Error {
+  if (
+    env.VERCEL_ENV === "production" &&
+    isLoopbackHost(new URL(env.DATABASE_URL).hostname)
+  ) {
+    return new Error(
+      "DATABASE_URL: points at a local database in the Vercel production environment",
+    );
+  }
+  return env.DATABASE_URL;
+}
+
+function resolveReviewLinks(
+  env: z.infer<typeof rawServerEnvSchema>,
+): ReviewLinkSecrets | Error {
+  const current = env.REVIEW_LINK_SECRET ?? null;
+  const previous = env.REVIEW_LINK_SECRET_PREVIOUS ?? null;
+  if (env.VERCEL_ENV === "production" && !current) {
+    return new Error(
+      "REVIEW_LINK_SECRET: required in the Vercel production environment",
+    );
+  }
+  if (current !== null && current === env.AUTH_SECRET) {
+    return new Error("REVIEW_LINK_SECRET: must differ from AUTH_SECRET");
+  }
+  if (previous !== null && current === null) {
+    return new Error(
+      "REVIEW_LINK_SECRET_PREVIOUS: only used together with REVIEW_LINK_SECRET",
+    );
+  }
+  return {
+    reviewLinkSecret: current,
+    previousReviewLinkSecret: previous,
+    authSecret: env.AUTH_SECRET,
+  };
 }
 
 function resolveEmail(
@@ -348,6 +422,8 @@ export function parseServerEnv(
   }
 
   const siteUrl = resolveSiteUrl(result.data);
+  const databaseUrl = resolveDatabase(result.data);
+  const reviewLinks = resolveReviewLinks(result.data);
   const email = resolveEmail(result.data);
   const storage = resolveStorage(result.data);
   const payments = resolvePayments(result.data);
@@ -357,11 +433,19 @@ export function parseServerEnv(
           "CRON_SECRET: required in the Vercel production environment (checkout reconciliation)",
         )
       : null;
-  const errors = [siteUrl, email, storage, payments, cron].filter(
-    (value) => value instanceof Error,
-  );
+  const errors = [
+    siteUrl,
+    databaseUrl,
+    reviewLinks,
+    email,
+    storage,
+    payments,
+    cron,
+  ].filter((value) => value instanceof Error);
   if (
     siteUrl instanceof Error ||
+    databaseUrl instanceof Error ||
+    reviewLinks instanceof Error ||
     email instanceof Error ||
     storage instanceof Error ||
     payments instanceof Error ||
@@ -374,8 +458,9 @@ export function parseServerEnv(
     nodeEnv: result.data.NODE_ENV,
     vercelEnv: result.data.VERCEL_ENV,
     siteUrl,
-    databaseUrl: result.data.DATABASE_URL,
+    databaseUrl,
     authSecret: result.data.AUTH_SECRET,
+    reviewLinks: Object.freeze(reviewLinks),
     email: Object.freeze(email),
     storage: Object.freeze(storage),
     payments: Object.freeze(payments),

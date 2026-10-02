@@ -220,9 +220,23 @@ certificationNumber }`). Adding them is purely additive: orders, inventory,
   order is created. Seeded and historical orders may have both checkout
   fields NULL.
 - `country` is fixed to `SE` by a CHECK constraint (Sweden only in V1).
+- **Open-hold client** (Milestone 14). `checkoutClientKey` is the
+  pseudonymous client of an open checkout: the HMAC of the client IP keyed
+  with `AUTH_SECRET` (the same value rate limiting uses, never the IP). It
+  caps open unpaid checkouts and held units per client and is set to NULL
+  whenever the order leaves PENDING (paid, expired, failed, superseded or
+  released by an operator). Indexed.
+- **Payment/fulfillment invariants** (CHECK, Milestone 14):
+  `orders_pending_unfulfilled_check` (PENDING ⇒ fulfillment NEW),
+  `orders_fulfillment_requires_payment_check` (PROCESSING, SHIPPED and
+  COMPLETED only for PAID, PARTIALLY_REFUNDED or REFUNDED) and
+  `orders_refunded_amount_state_check` (refunded amount 0 unless partially
+  or fully refunded; strictly between 0 and the total for
+  PARTIALLY_REFUNDED; equal to the total for REFUNDED).
 - Fulfillment transitions are defined in `src/server/domain/fulfillment.ts`:
   NEW → PROCESSING → SHIPPED → COMPLETED, plus NEW/PROCESSING → CANCELLED.
-  PROCESSING and SHIPPED also require a paid, not fully refunded order.
+  PROCESSING and SHIPPED also require a paid, not fully refunded order;
+  CANCELLED requires a payment outcome (never PENDING, Milestone 14).
   A CHECK constraint requires `shippedAt` for SHIPPED and COMPLETED. Since
   Milestone 10 the only writer is `transitionFulfillment`
   (`src/server/orders/fulfillment.ts`), which locks the order, audits the
@@ -519,7 +533,11 @@ minutes), review pages (60) and review submissions (20). The primary key is `(ke
 `INSERT … ON CONFLICT DO UPDATE … RETURNING count` per request. `key` is
 `<scope>:<HMAC-SHA-256 of the client IP>` (keyed with `AUTH_SECRET`), so no
 raw IP address is stored. Windows older than a day are deleted after checkout
-requests. Better Auth's own counters stay in `auth_rate_limits`.
+requests and by the scheduled job. Better Auth's own counters stay in
+`auth_rate_limits` (keyed by the raw IP); the scheduled job deletes rows
+older than a day, together with expired `admin_sessions` (which carry the
+sign-in IP and user agent) and expired `auth_verifications`
+(`src/server/security/housekeeping.ts`, Milestone 14).
 
 ## Redirects
 
@@ -540,8 +558,10 @@ no live page, and answers with HTTP 308.
 ## Error handling note
 
 PostgreSQL CHECK violations include a _"Failing row contains (…)"_ detail,
-which can contain customer data. Server logs must record the Prisma error code
-and constraint name, never the raw error object (Milestone 14 logging).
+which can contain customer data. Server logs therefore record only an
+error's name, type and code (`logSafe`, `src/server/logging/safe-log.ts`),
+never the raw error object or message. Milestone 14 reviewed every logging
+call against this rule.
 
 ## Operational notes
 

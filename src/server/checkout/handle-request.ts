@@ -1,11 +1,10 @@
 import type { PrismaClient } from "@/generated/prisma/client";
-import {
-  checkoutRequestSchema,
-  type CheckoutResponse,
-} from "@/lib/checkout/checkout";
+import type { CheckoutResponse } from "@/lib/checkout/checkout";
+import { checkoutRequestSchema } from "@/lib/checkout/request-schema";
 import {
   CHECKOUT_RATE_LIMIT,
   clientIp,
+  clientKey,
   consumeRateLimit,
   rateLimitKey,
 } from "@/server/security/rate-limit";
@@ -55,10 +54,11 @@ export async function handleCheckoutRequest(
   }
 
   const now = (deps.now ?? (() => new Date()))();
+  const ip = clientIp(request.headers);
   const limit = await consumeRateLimit(
     deps.db,
     CHECKOUT_RATE_LIMIT,
-    rateLimitKey(CHECKOUT_RATE_LIMIT, clientIp(request.headers), deps.secret),
+    rateLimitKey(CHECKOUT_RATE_LIMIT, ip, deps.secret),
     now,
   );
   if (!limit.allowed) {
@@ -96,12 +96,17 @@ export async function handleCheckoutRequest(
         now: () => now,
       },
       parsed.data,
+      { clientKey: clientKey(ip, deps.secret) },
     );
     if (outcome.ok) return respond({ ok: true, url: outcome.url }, 200);
     switch (outcome.code) {
       case "rejected":
       case "attempt_closed":
         return respond(outcome, 409);
+      case "hold_limit":
+        // Ends when one of the client's holds is paid, expires (at most
+        // about 55 minutes) or is superseded.
+        return respond(outcome, 429, { "Retry-After": "300" });
       case "busy":
         return respond(outcome, 503, { "Retry-After": "2" });
       default:

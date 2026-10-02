@@ -343,7 +343,10 @@ describe("Stripe event idempotency", () => {
         });
         await tx.order.update({
           where: { id: order.id },
-          data: { refundedAmount: { increment: 1_000 } },
+          data: {
+            refundedAmount: { increment: 1_000 },
+            paymentStatus: "PARTIALLY_REFUNDED",
+          },
         });
       });
 

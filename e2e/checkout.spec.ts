@@ -376,6 +376,43 @@ test.describe("server validation in the drawer", () => {
     });
     expect(response.status()).toBe(403);
   });
+
+  test("explains the open-checkout cap to a client already holding stock elsewhere (Milestone 14)", async ({
+    page,
+    baseURL,
+  }) => {
+    const product = await createTestProduct({ stockOnHand: 20 });
+    await page.goto("/");
+    // Three open checkouts from this browser's network address (crafted
+    // requests, as a script holding stock would send them).
+    for (let i = 0; i < 3; i += 1) {
+      const response = await page.request.post("/api/checkout", {
+        headers: { Origin: new URL(baseURL!).origin },
+        data: {
+          attemptId: crypto.randomUUID(),
+          lines: [
+            {
+              productId: product.id,
+              quantity: 1,
+              expectedUnitPriceAmount: product.priceAmount,
+            },
+          ],
+        },
+      });
+      expect(response.status()).toBe(200);
+    }
+
+    await plantCart(page, [{ product, quantity: 1 }]);
+    await openCart(page);
+    await checkoutButton(page).click();
+
+    await expect(checkoutError(page)).toContainText(
+      "Det finns redan flera påbörjade betalningar från din anslutning.",
+    );
+    await expect(page).not.toHaveURL(STRIPE_PAGE);
+    expect(await pendingOrdersFor(product.id)).toHaveLength(3);
+    await expectNoAxeViolations(page);
+  });
 });
 
 // The project's browser stays; only the phone's viewport and input change.

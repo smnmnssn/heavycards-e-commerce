@@ -1,5 +1,3 @@
-import { z } from "zod";
-
 import type { IsoDate } from "@/lib/dates";
 
 /*
@@ -104,15 +102,31 @@ export function removeFromCart(cart: Cart, productId: string): Cart {
 export const CART_STORAGE_KEY = "heavycards:cart";
 export const CART_STORAGE_VERSION = 1;
 
-const storedLineSchema = z.object({
-  id: z.uuid(),
-  q: z.number().int().min(1),
-});
+/*
+ * Hand-written checks rather than Zod: this module runs in every storefront
+ * page's browser bundle (the cart), where Zod alone would add about 90 KB
+ * gzipped (Milestone 14). The UUID pattern is exactly Zod's `z.uuid()`,
+ * which /api/cart applies on the server, so the browser never stores an ID
+ * the server would refuse.
+ */
+const UUID =
+  /^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/;
+const MAX_STORED_LINES = 500;
 
-const storedCartSchema = z.object({
-  v: z.literal(CART_STORAGE_VERSION),
-  lines: z.array(z.unknown()).max(500),
-});
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+function storedLine(value: unknown): { id: string; q: number } | null {
+  if (!isRecord(value)) return null;
+  const { id, q } = value;
+  return typeof id === "string" &&
+    UUID.test(id) &&
+    typeof q === "number" &&
+    Number.isSafeInteger(q) &&
+    q >= 1
+    ? { id, q }
+    : null;
+}
 
 /**
  * Parses stored data defensively and never throws. Malformed JSON, unknown
@@ -128,14 +142,20 @@ export function parseStoredCart(raw: string | null | undefined): Cart {
   } catch {
     return emptyCart;
   }
-  const stored = storedCartSchema.safeParse(json);
-  if (!stored.success) return emptyCart;
+  if (
+    !isRecord(json) ||
+    json.v !== CART_STORAGE_VERSION ||
+    !Array.isArray(json.lines) ||
+    json.lines.length > MAX_STORED_LINES
+  ) {
+    return emptyCart;
+  }
 
   let cart: Cart = emptyCart;
-  for (const candidate of stored.data.lines) {
-    const line = storedLineSchema.safeParse(candidate);
-    if (!line.success) continue;
-    cart = addToCart(cart, line.data.id, line.data.q, MAX_LINE_QUANTITY).cart;
+  for (const candidate of json.lines as unknown[]) {
+    const line = storedLine(candidate);
+    if (!line) continue;
+    cart = addToCart(cart, line.id, line.q, MAX_LINE_QUANTITY).cart;
   }
   return cart;
 }

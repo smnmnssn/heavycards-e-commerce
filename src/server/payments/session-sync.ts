@@ -308,6 +308,8 @@ async function finalizePaid(
       paymentStatus: "PAID",
       paidAt: state.paymentIntent.paidAt ?? context.now,
       stripePaymentIntentId: state.paymentIntent.id,
+      // The open-hold cap only concerns unpaid checkouts.
+      checkoutClientKey: null,
       customerName: customer.customerName,
       email: customer.email,
       phone: customer.phone,
@@ -361,7 +363,7 @@ async function releaseOrder(
   const released = await releaseReservations(tx, order.id);
   await tx.order.update({
     where: { id: order.id },
-    data: { paymentStatus: status },
+    data: { paymentStatus: status, checkoutClientKey: null },
   });
   if (status === "FAILED") {
     await audit(

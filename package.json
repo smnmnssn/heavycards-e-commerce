@@ -26,7 +26,8 @@
     "db:check": "prisma validate && prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code",
     "db:seed": "prisma db seed",
     "db:reset": "prisma migrate reset && prisma db seed",
-    "admin:create-owner": "tsx scripts/create-owner.ts"
+    "admin:create-owner": "tsx scripts/create-owner.ts",
+    "ops": "node --conditions=react-server --import tsx scripts/operator.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "5.9.1",

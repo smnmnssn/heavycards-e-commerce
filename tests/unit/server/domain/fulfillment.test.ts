@@ -50,7 +50,12 @@ describe("payment precondition (Milestone 10)", () => {
     ["SHIPPED", "EXPIRED", false],
     ["SHIPPED", "REFUNDED", false],
     ["COMPLETED", "REFUNDED", true],
-    ["CANCELLED", "PENDING", true],
+    // Milestone 14: a pending checkout can still be paid at Stripe, so it
+    // is never cancelled before Stripe's outcome is known.
+    ["CANCELLED", "PENDING", false],
+    ["CANCELLED", "EXPIRED", true],
+    ["CANCELLED", "FAILED", true],
+    ["CANCELLED", "PAID", true],
     ["CANCELLED", "REFUNDED", true],
   ])("%s with payment %s: %s", (to, paymentStatus, allowed) => {
     expect(fulfillmentAllowedForPayment(to, paymentStatus)).toBe(allowed);

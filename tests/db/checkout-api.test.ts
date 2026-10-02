@@ -250,20 +250,24 @@ describe("POST /api/checkout", () => {
 
   it("rate-limits checkout creation per client", async () => {
     const { body } = await validBody();
-    const statuses: number[] = [];
+    // Codes, not statuses: from the fourth open checkout the client also
+    // meets the open-hold cap (429 "hold_limit", Milestone 14), which is
+    // checked after the request limit.
+    const codes: string[] = [];
     for (let i = 0; i < CHECKOUT_RATE_LIMIT.limit + 1; i += 1) {
       const response = await handleCheckoutRequest(
         post({ ...body, attemptId: randomUUID() }, {}, "198.51.100.1"),
         deps,
       );
-      statuses.push(response.status);
+      const json = (await response.json()) as { ok: boolean; code?: string };
+      codes.push(json.ok ? "ok" : json.code!);
       if (response.status === 429) {
         expect(Number(response.headers.get("retry-after"))).toBeGreaterThan(0);
       }
     }
 
-    expect(statuses.slice(0, -1).every((status) => status !== 429)).toBe(true);
-    expect(statuses.at(-1)).toBe(429);
+    expect(codes.slice(0, -1)).not.toContain("rate_limited");
+    expect(codes.at(-1)).toBe("rate_limited");
 
     // Another client is unaffected.
     const other = await handleCheckoutRequest(

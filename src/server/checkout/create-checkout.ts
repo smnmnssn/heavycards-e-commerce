@@ -8,6 +8,7 @@ import {
 import { loadCheckoutProducts } from "@/server/cart/cart-products";
 import {
   holdingReservationSelect,
+  holdingReservationSql,
   holdingReservationWhere,
 } from "@/server/data/reservations";
 import {
@@ -17,6 +18,8 @@ import {
 } from "@/server/db/transactions";
 import {
   evaluateCheckout,
+  exceededHoldLimit,
+  MAX_HELD_UNITS_PER_CLIENT,
   matchesOrderLines,
   MIN_REUSABLE_SESSION_MS,
   provisionalHoldUntil,
@@ -25,6 +28,7 @@ import {
 } from "@/server/domain/checkout";
 import { isReservationHolding } from "@/server/domain/inventory";
 import { formatOrderNumber } from "@/server/domain/order-number";
+import { logSafe } from "@/server/logging/safe-log";
 
 import type {
   CheckoutGateway,
@@ -64,6 +68,12 @@ import type {
  * order and, through Stripe's idempotency key `heavycards-checkout-<order
  * id>`, the same session. A new attempt names the previous one, which is
  * expired at Stripe and released, so one browser never blocks its own stock.
+ *
+ * Abuse (Milestone 14): a new order records its client key (the HMAC of the
+ * client IP) and is refused when that client already holds as many open
+ * checkouts or units as one client may (exceededHoldLimit). The check runs
+ * under a per-client advisory lock, so simultaneous requests cannot exceed
+ * the cap together.
  */
 
 export const CHECKOUT_SUCCESS_PATH = "/kassa/bekraftelse";
@@ -120,9 +130,14 @@ type Reserved =
   | { ok: true; order: CheckoutOrder; created: boolean }
   | { ok: false; failure: CheckoutFailure };
 
+/**
+ * `clientKey` identifies the requesting client for the open-hold caps (see
+ * exceededHoldLimit). Without one (scripts, tests) no cap applies.
+ */
 export async function createCheckout(
   deps: CheckoutDeps,
   request: CheckoutRequest,
+  { clientKey = null }: { clientKey?: string | null } = {},
 ): Promise<CheckoutOutcome> {
   const now = (deps.now ?? (() => new Date()))();
 
@@ -140,7 +155,7 @@ export async function createCheckout(
 
   let reserved: Reserved;
   try {
-    reserved = await reserveWithRetry(deps.db, request, now);
+    reserved = await reserveWithRetry(deps.db, request, now, clientKey);
   } catch (error) {
     if (isLockTimeout(error)) return { ok: false, code: "busy" };
     throw error;
@@ -197,14 +212,17 @@ async function reserveWithRetry(
   db: PrismaClient,
   request: CheckoutRequest,
   now: Date,
+  clientKey: string | null,
 ): Promise<Reserved> {
   try {
-    return await withTransactionRetry(() => reserve(db, request, now));
+    return await withTransactionRetry(() =>
+      reserve(db, request, now, clientKey),
+    );
   } catch (error) {
     // Two submissions of one new attempt raced; the loser now finds the
     // winner's order and reuses it.
     if (!isUniqueViolation(error)) throw error;
-    return withTransactionRetry(() => reserve(db, request, now));
+    return withTransactionRetry(() => reserve(db, request, now, clientKey));
   }
 }
 
@@ -212,6 +230,7 @@ function reserve(
   db: PrismaClient,
   request: CheckoutRequest,
   now: Date,
+  clientKey: string | null,
 ): Promise<Reserved> {
   return db.$transaction(async (tx) => {
     await tx.$executeRaw(LOCK_TIMEOUT);
@@ -223,6 +242,30 @@ function reserve(
       });
     const earlier = await findAttempt();
     if (earlier) return reuseAttempt(earlier, request, now);
+
+    if (clientKey) {
+      // Serializes this client's new checkouts (always taken before the
+      // product locks, so the lock order stays global), then applies the cap.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${clientKey}, 0))`;
+      // The same attempt, submitted twice at once, may have committed while
+      // we waited: reuse it rather than count it against the cap.
+      const raced = await findAttempt();
+      if (raced) return reuseAttempt(raced, request, now);
+      const limit = exceededHoldLimit(
+        await openClientHolds(tx, clientKey, now),
+        request.lines.reduce((sum, line) => sum + line.quantity, 0),
+      );
+      if (limit) {
+        // A security event: which cap, never the client key or IP.
+        logSafe("checkout", "info", "open-hold limit reached", { limit });
+        return failure({
+          ok: false,
+          code: "hold_limit",
+          limit,
+          maxUnits: MAX_HELD_UNITS_PER_CLIENT,
+        });
+      }
+    }
 
     // Lock in a global order (by id) so concurrent checkouts never deadlock.
     const productIds = request.lines.map((line) => line.productId).sort();
@@ -272,6 +315,7 @@ function reserve(
     const order = await tx.order.create({
       data: {
         checkoutAttemptId: request.attemptId,
+        checkoutClientKey: clientKey,
         checkoutExpiresAt: sessionExpiryFor(now),
         paymentStatus: "PENDING",
         currency: "SEK",
@@ -306,6 +350,23 @@ function reserve(
     });
     return { ok: true, order, created: true };
   }, TRANSACTION_OPTIONS);
+}
+
+/** Unpaid checkouts of this client that still hold stock, and their units. */
+async function openClientHolds(
+  tx: Prisma.TransactionClient,
+  clientKey: string,
+  now: Date,
+) {
+  const [row] = await tx.$queryRaw<Array<{ checkouts: number; units: number }>>`
+    SELECT count(DISTINCT o.id)::int AS checkouts,
+           coalesce(sum(r.quantity), 0)::int AS units
+    FROM orders o
+    JOIN inventory_reservations r ON r.order_id = o.id
+    WHERE o.checkout_client_key = ${clientKey}
+      AND o.payment_status = 'PENDING'
+      AND ${holdingReservationSql(now)}`;
+  return row ?? { checkouts: 0, units: 0 };
 }
 
 const failure = (value: CheckoutFailure): Reserved => ({
@@ -441,7 +502,7 @@ export async function closeOrder(
       });
       await tx.order.update({
         where: { id: orderId },
-        data: { paymentStatus: "EXPIRED" },
+        data: { paymentStatus: "EXPIRED", checkoutClientKey: null },
       });
       return true;
     }, TRANSACTION_OPTIONS),

@@ -12,14 +12,14 @@
  * Started by e2e/review-fixtures.ts as
  *   node --conditions=react-server --import tsx e2e/support/review-actions.ts …
  * (the condition lets `server-only` modules load outside Next.js). Acts as
- * the seeded OWNER and uses the test server's AUTH_SECRET, so links it
+ * the seeded OWNER and uses the test server's review-link secrets, so links it
  * renders are the ones the server accepts. Never run against production.
  */
 import { existsSync } from "node:fs";
 
 import { createEmailTransport } from "@/lib/email/transport";
 import { createPrismaClient } from "@/lib/db/create-client";
-import { deriveReviewLinkKey } from "@/server/domain/review-token";
+import { reviewLinkKeyFromSecrets } from "@/server/domain/review-token";
 import { processDueEmails } from "@/server/email/outbox";
 import { transitionFulfillment } from "@/server/orders/fulfillment";
 import { moderateReview } from "@/server/reviews/moderation";
@@ -35,7 +35,11 @@ if (!DATABASE_URL || !AUTH_SECRET) {
 }
 
 const db = createPrismaClient(DATABASE_URL);
-const reviewLinkKey = deriveReviewLinkKey(AUTH_SECRET);
+const reviewLinkKey = reviewLinkKeyFromSecrets({
+  reviewLinkSecret: process.env.REVIEW_LINK_SECRET || null,
+  previousReviewLinkSecret: process.env.REVIEW_LINK_SECRET_PREVIOUS || null,
+  authSecret: AUTH_SECRET,
+});
 
 async function main([command, id, arg]: string[]): Promise<unknown> {
   const owner = await db.adminUser.findUniqueOrThrow({

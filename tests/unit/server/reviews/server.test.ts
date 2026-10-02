@@ -4,7 +4,13 @@ const moderateReview = vi.fn();
 const revalidatePath = vi.fn();
 
 vi.mock("@/lib/env/server", () => ({
-  env: { authSecret: "unit-test-auth-secret-0123456789abcdef" },
+  env: {
+    reviewLinks: {
+      reviewLinkSecret: "unit-test-review-link-secret-0123456789",
+      previousReviewLinkSecret: null,
+      authSecret: "unit-test-auth-secret-0123456789abcdef",
+    },
+  },
 }));
 vi.mock("@/lib/db/client", () => ({ db: { marker: "db" } }));
 vi.mock("next/cache", () => ({ revalidatePath }));
@@ -73,7 +79,8 @@ describe("moderateReviewAndRevalidate (for the Milestone 12 admin UI)", () => {
     });
   });
 
-  it("derives the review link key once from the application secret", () => {
+  it("derives the review link key from the dedicated secret, keeping AUTH_SECRET as a fallback", () => {
     expect(reviewLinkKey.bytes).toHaveLength(32);
+    expect(reviewLinkKey.previous).toHaveLength(1);
   });
 });

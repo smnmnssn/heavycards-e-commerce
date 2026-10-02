@@ -9,6 +9,7 @@ server-side logic. Market: Sweden only, Swedish UI, SEK.
 - **Database design:** [docs/database.md](docs/database.md).
 - **Design system:** [docs/design-system.md](docs/design-system.md).
 - **Routes:** [docs/routes.md](docs/routes.md).
+- **Production readiness and runbooks:** [docs/production-readiness.md](docs/production-readiness.md).
 
 ## Status
 
@@ -26,8 +27,9 @@ server-side logic. Market: Sweden only, Swedish UI, SEK.
 | 10 — Transactional email   | Done   |
 | 11 — Verified reviews      | Done   |
 | 12 — Admin operations      | Done   |
-| 13 — SEO                   | Review |
-| 14–15                      | —      |
+| 13 — SEO                   | Done   |
+| 14 — Hardening             | Review |
+| 15 — Production deployment | —      |
 
 Sections below marked _(later milestone)_ are placeholders and are filled in as
 those features land.
@@ -85,6 +87,11 @@ Validation lives in `src/lib/env/schema.ts` and runs:
 `APP_URL` is required for any production build or server, except on Vercel
 previews, which fall back to the deployment URL. `APP_URL` is also the only
 origin trusted by the admin login's origin/CSRF checks.
+`REVIEW_LINK_SECRET` (at least 32 characters, different from `AUTH_SECRET`)
+derives review links and is required in Vercel production; locally
+`AUTH_SECRET` is used when it is unset. The full list of what production
+refuses to start without is in
+[docs/production-readiness.md](docs/production-readiness.md#secrets-and-configuration).
 
 Email settings (`EMAIL_TRANSPORT`, `RESEND_API_KEY`, `EMAIL_FROM`) are described
 under [Email](#email). Payment settings (`STRIPE_SECRET_KEY`,
@@ -93,24 +100,25 @@ values from `@/lib/env/server`, which is marked `server-only`.
 
 ## Scripts
 
-| Script                       | Purpose                                                                  |
-| ---------------------------- | ------------------------------------------------------------------------ |
-| `npm run dev`                | Development server                                                       |
-| `npm run build`              | Production build (requires `APP_URL`)                                    |
-| `npm run start`              | Serve the production build                                               |
-| `npm run lint`               | ESLint, zero warnings allowed                                            |
-| `npm run format`             | Format with Prettier (`format:check` verifies only, used in CI)          |
-| `npm run typecheck`          | Generate Next.js route types, then `tsc --noEmit`                        |
-| `npm test`                   | Vitest, single run (`test:watch` for watch mode)                         |
-| `npm run test:db`            | Vitest against the PostgreSQL test database                              |
-| `npm run test:e2e`           | Playwright against the production build (build first, see below)         |
-| `npm run db:migrate`         | Create and apply a migration after editing the schema (dev only)         |
-| `npm run db:deploy`          | Apply pending migrations (CI, production)                                |
-| `npm run db:check`           | Validate the schema and verify the database matches it (drift)           |
-| `npm run db:seed`            | Load development seed data (refuses production/remote databases)         |
-| `npm run db:reset`           | Drop and recreate the dev database, then seed (asks to confirm)          |
-| `npm run db:generate`        | Regenerate the Prisma client (runs automatically on install)             |
-| `npm run admin:create-owner` | Create the first OWNER administrator (see [Admin access](#admin-access)) |
+| Script                       | Purpose                                                                                         |
+| ---------------------------- | ----------------------------------------------------------------------------------------------- |
+| `npm run dev`                | Development server                                                                              |
+| `npm run build`              | Production build (requires `APP_URL`)                                                           |
+| `npm run start`              | Serve the production build                                                                      |
+| `npm run lint`               | ESLint, zero warnings allowed                                                                   |
+| `npm run format`             | Format with Prettier (`format:check` verifies only, used in CI)                                 |
+| `npm run typecheck`          | Generate Next.js route types, then `tsc --noEmit`                                               |
+| `npm test`                   | Vitest, single run (`test:watch` for watch mode)                                                |
+| `npm run test:db`            | Vitest against the PostgreSQL test database                                                     |
+| `npm run test:e2e`           | Playwright against the production build (build first, see below)                                |
+| `npm run db:migrate`         | Create and apply a migration after editing the schema (dev only)                                |
+| `npm run db:deploy`          | Apply pending migrations (CI, production)                                                       |
+| `npm run db:check`           | Validate the schema and verify the database matches it (drift)                                  |
+| `npm run db:seed`            | Load development seed data (refuses production/remote databases)                                |
+| `npm run db:reset`           | Drop and recreate the dev database, then seed (asks to confirm)                                 |
+| `npm run db:generate`        | Regenerate the Prisma client (runs automatically on install)                                    |
+| `npm run admin:create-owner` | Create the first OWNER administrator (see [Admin access](#admin-access))                        |
+| `npm run ops`                | OWNER-authenticated operator commands (see [runbooks](docs/production-readiness.md#4-runbooks)) |
 
 ## Testing
 
@@ -539,3 +547,7 @@ and launch checks: docs/architecture.md → Milestone 13 → Manual SEO work.
 ## Deployment _(Milestone 15)_
 
 Target platform: Vercel with Node.js 24.x (from `engines.node`).
+
+The manual launch checklist (environment, Vercel Firewall, logs, database
+backups, Stripe, Resend, Blob, cron, monitoring) and the operator runbooks
+are in [docs/production-readiness.md](docs/production-readiness.md).

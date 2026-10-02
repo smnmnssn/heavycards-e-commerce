@@ -10,6 +10,7 @@ import {
   type ProductInput,
 } from "@/lib/validation/catalog";
 import { recordPathChange, releasePath } from "@/server/catalog/redirects";
+import { logSafe } from "@/server/logging/safe-log";
 
 import {
   assertCatalogManager,
@@ -468,8 +469,11 @@ export async function deleteProduct(
 /**
  * Removes stored image files after the database change has committed. A
  * failure only leaves an unreferenced file behind, never a broken image, so
- * it is logged (without details that could contain URLs or tokens) and not
- * raised.
+ * it is logged and not raised. The log names the keys (server-generated
+ * `products/<uuid>/<uuid>.<ext>` paths of public product photos; no tokens
+ * or personal data) so an operator can delete them by hand
+ * (docs/production-readiness.md → Storage); the provider error is reduced
+ * to its name, since its message could contain a URL with a token.
  */
 export async function deleteStoredObjects(
   storage: ObjectStorage,
@@ -479,9 +483,10 @@ export async function deleteStoredObjects(
   if (managed.length === 0) return;
   try {
     await storage.delete(managed);
-  } catch {
-    console.error(
-      `[storage] failed to delete ${managed.length} product image object(s)`,
-    );
+  } catch (error) {
+    logSafe("storage", "error", "product image objects could not be deleted", {
+      keys: managed,
+      error,
+    });
   }
 }

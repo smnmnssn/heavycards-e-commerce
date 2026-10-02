@@ -92,6 +92,11 @@ export async function submitFulfillmentForm(
           ].toLowerCase()}. Den kan ha ändrats av någon annan – ladda om sidan.`,
         );
       case "PAYMENT_NOT_SETTLED":
+        if (result.paymentStatus === "PENDING") {
+          return failure(
+            "Betalningen pågår fortfarande hos Stripe, så beställningen kan inte ändras ännu. Den avslutas av sig själv när kunden betalar eller kassan går ut. Använd ”Kontrollera med Stripe igen” om den väntat länge.",
+          );
+        }
         return failure(
           `Betalningen har status ${PAYMENT_STATUS_LABELS[
             result.paymentStatus

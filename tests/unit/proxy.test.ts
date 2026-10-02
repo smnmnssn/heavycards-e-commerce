@@ -57,3 +57,42 @@ describe("admin proxy", () => {
     expect(response.status).toBe(307);
   });
 });
+
+describe("admin Content-Security-Policy (Milestone 14)", () => {
+  const nonceOf = (policy: string | null) =>
+    /'nonce-([A-Za-z0-9+/=]+)'/.exec(policy ?? "")?.[1];
+
+  it("gives every admin response a nonce policy, also passed to Next.js", () => {
+    const response = proxy(
+      request("/admin/orders", "heavycards-admin.session_token=abc.def"),
+    );
+    const sent = response.headers.get("content-security-policy");
+    const forwarded = response.headers.get(
+      "x-middleware-request-content-security-policy",
+    );
+
+    expect(sent).toMatch(/script-src 'self' 'nonce-[^']+' 'strict-dynamic'/);
+    expect(sent).not.toMatch(/script-src[^;]*'unsafe-inline'/);
+    expect(forwarded).toBe(sent);
+  });
+
+  it("covers the public admin pages (login, reset, invitation) too", () => {
+    for (const path of ["/admin/login", "/admin/invite?token=abc"]) {
+      expect(
+        proxy(request(path)).headers.get("content-security-policy"),
+      ).toMatch(/'strict-dynamic'/);
+    }
+  });
+
+  it("uses a fresh, unguessable nonce per request", () => {
+    const nonces = new Set(
+      Array.from({ length: 20 }, () =>
+        nonceOf(
+          proxy(request("/admin/login")).headers.get("content-security-policy"),
+        ),
+      ),
+    );
+    expect(nonces.size).toBe(20);
+    expect([...nonces][0]).toMatch(/^[A-Za-z0-9+/]{22}==$/);
+  });
+});

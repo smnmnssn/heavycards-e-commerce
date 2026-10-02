@@ -65,6 +65,12 @@ jobs:
           echo "AUTH_SECRET=$auth_secret" >> "$GITHUB_ENV"
           echo "SEED_ADMIN_PASSWORD=$seed_password" >> "$GITHUB_ENV"
 
+      # Fails on any critical advisory. The known high findings (mysql2 and
+      # deepmerge-ts inside the Prisma CLI, never deployed) are reviewed in
+      # docs/production-readiness.md → Dependencies.
+      - name: Audit dependencies
+        run: npm audit --audit-level=critical
+
       - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck

@@ -1,22 +1,37 @@
 import type { NextConfig } from "next";
 
+import { contentSecurityPolicy } from "./src/lib/security/content-security-policy";
 import { isIndexableDeployment } from "./src/lib/seo/indexing";
 
 /**
- * Baseline security headers applied to every response.
- *
- * A full Content-Security-Policy is deliberately deferred until the Stripe,
- * image storage and analytics origins are known; `frame-ancestors` is safe to
- * enforce on its own now. HSTS is provided by Vercel for HTTPS deployments.
+ * Security headers applied to every response (Milestone 14 review). HSTS is
+ * sent by Vercel for HTTPS deployments (verified at launch, see
+ * docs/production-readiness.md).
  */
 const securityHeaders = [
-  { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
   { key: "X-Frame-Options", value: "DENY" },
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   {
     key: "Permissions-Policy",
-    value: "camera=(), microphone=(), geolocation=(), browsing-topics=()",
+    value:
+      "camera=(), microphone=(), geolocation=(), payment=(), usb=(), browsing-topics=()",
+  },
+  // Pages opened from HeavyCards (or opening it) get no handle on its
+  // window; Stripe Checkout is a full-page navigation, not a popup.
+  { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+];
+
+/**
+ * The storefront CSP for every route except /admin, which gets a stricter,
+ * nonce-based policy from the proxy (src/lib/security/content-security-policy.ts).
+ */
+const storefrontCspHeaders = [
+  {
+    key: "Content-Security-Policy",
+    value: contentSecurityPolicy({
+      development: process.env.NODE_ENV === "development",
+    }),
   },
 ];
 
@@ -68,6 +83,8 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       { source: "/:path*", headers: securityHeaders },
+      // Everything but /admin and /admin/**; "/administrator" would match.
+      { source: "/:path((?!admin(?:/|$)).*)", headers: storefrontCspHeaders },
       ...deploymentHeaders,
       { source: "/admin", headers: adminHeaders },
       { source: "/admin/:path*", headers: adminHeaders },

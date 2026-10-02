@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { connection } from "next/server";
 
 import { siteConfig } from "@/lib/config/site";
 
@@ -11,6 +12,15 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
-export default function AdminRootLayout({ children }: LayoutProps<"/admin">) {
+/**
+ * Every admin page renders per request, never from a prerendered copy: the
+ * proxy gives each admin response a fresh CSP nonce (src/proxy.ts), which
+ * Next.js can only apply while rendering, and admin pages never belong in
+ * a shared cache.
+ */
+export default async function AdminRootLayout({
+  children,
+}: LayoutProps<"/admin">) {
+  await connection();
   return children;
 }

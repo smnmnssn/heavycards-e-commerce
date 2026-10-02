@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import { EnvValidationError, parseServerEnv } from "@/lib/env/schema";
 
-const DATABASE_URL = "postgresql://user:secret-password@localhost:5432/app";
+const DATABASE_URL =
+  "postgresql://user:secret-password@db.heavycards.test:5432/app";
 // Test-only value; any 32+ character string is valid.
 const AUTH_SECRET = "unit-test-auth-secret-0123456789abcdef";
+const REVIEW_LINK_SECRET = "unit-test-review-link-secret-0123456789";
 
 /** Minimal valid environment; individual tests override what they exercise. */
 const parse = (overrides: Record<string, string | undefined> = {}) =>
@@ -18,6 +20,11 @@ describe("parseServerEnv", () => {
       siteUrl: "http://localhost:3000",
       databaseUrl: DATABASE_URL,
       authSecret: AUTH_SECRET,
+      reviewLinks: {
+        reviewLinkSecret: null,
+        previousReviewLinkSecret: null,
+        authSecret: AUTH_SECRET,
+      },
       email: {
         transport: "console",
         from: "HeavyCards <no-reply@heavycards.invalid>",
@@ -194,6 +201,7 @@ describe("parseServerEnv: email", () => {
       STRIPE_SECRET_KEY: "sk_live_unittest",
       STRIPE_WEBHOOK_SECRET: "whsec_unittest",
       CRON_SECRET: "cron-secret-unittest-0123",
+      REVIEW_LINK_SECRET,
     };
     expect(() => parse(production)).toThrow(/RESEND_API_KEY and EMAIL_FROM/);
     expect(
@@ -286,6 +294,7 @@ describe("parseServerEnv: image storage", () => {
       STRIPE_SECRET_KEY: "sk_live_unittest",
       STRIPE_WEBHOOK_SECRET: "whsec_unittest",
       CRON_SECRET: "cron-secret-unittest-0123",
+      REVIEW_LINK_SECRET,
     };
     expect(() => parse(production)).toThrow(/BLOB_READ_WRITE_TOKEN: required/);
     expect(
@@ -317,6 +326,7 @@ describe("parseServerEnv: payments", () => {
     BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_test",
     STRIPE_WEBHOOK_SECRET: "whsec_unittest",
     CRON_SECRET: "cron-secret-unittest-0123",
+    REVIEW_LINK_SECRET,
   };
 
   it("uses Stripe by default and works without a key outside production", () => {
@@ -436,6 +446,7 @@ describe("parseServerEnv: transactional email sender (Milestone 10)", () => {
     STRIPE_SECRET_KEY: "sk_live_unittest",
     STRIPE_WEBHOOK_SECRET: "whsec_unittest",
     CRON_SECRET: "cron-secret-unittest-0123",
+    REVIEW_LINK_SECRET,
   };
 
   it.each([
@@ -508,5 +519,108 @@ describe("parseServerEnv: transactional email sender (Milestone 10)", () => {
       }),
     ).toThrow(/resend is refused when NODE_ENV=test/);
     expect(parse({ NODE_ENV: "test" }).email.transport).toBe("console");
+  });
+});
+
+describe("parseServerEnv: production hardening (Milestone 14)", () => {
+  const production = {
+    NODE_ENV: "production",
+    VERCEL_ENV: "production",
+    APP_URL: "https://heavycards.se",
+    DATABASE_URL: "postgresql://user:secret-password@db.example.net:5432/app",
+    EMAIL_TRANSPORT: "resend",
+    RESEND_API_KEY: "re_live_key_123",
+    EMAIL_FROM: "HeavyCards <order@heavycards.se>",
+    BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_test",
+    STRIPE_SECRET_KEY: "sk_live_unittest",
+    STRIPE_WEBHOOK_SECRET: "whsec_unittest",
+    CRON_SECRET: "cron-secret-unittest-0123",
+    REVIEW_LINK_SECRET,
+  };
+
+  it("accepts a complete production configuration", () => {
+    expect(parse(production).reviewLinks).toEqual({
+      reviewLinkSecret: REVIEW_LINK_SECRET,
+      previousReviewLinkSecret: null,
+      authSecret: AUTH_SECRET,
+    });
+  });
+
+  it("requires a dedicated review-link secret in production, distinct from AUTH_SECRET", () => {
+    expect(() =>
+      parse({ ...production, REVIEW_LINK_SECRET: undefined }),
+    ).toThrow(/REVIEW_LINK_SECRET: required in the Vercel production/);
+    expect(() =>
+      parse({ ...production, REVIEW_LINK_SECRET: AUTH_SECRET }),
+    ).toThrow(/REVIEW_LINK_SECRET: must differ from AUTH_SECRET/);
+    expect(() =>
+      parse({ ...production, REVIEW_LINK_SECRET: "too-short" }),
+    ).toThrow(/REVIEW_LINK_SECRET: must be at least 32 characters/);
+  });
+
+  it("keeps AUTH_SECRET as the review-link key outside production when unset", () => {
+    expect(parse({ NODE_ENV: "development" }).reviewLinks).toEqual({
+      reviewLinkSecret: null,
+      previousReviewLinkSecret: null,
+      authSecret: AUTH_SECRET,
+    });
+  });
+
+  it("accepts a previous review-link secret only together with a current one", () => {
+    const previous = "previous-review-link-secret-0123456789ab";
+    expect(
+      parse({ ...production, REVIEW_LINK_SECRET_PREVIOUS: previous })
+        .reviewLinks.previousReviewLinkSecret,
+    ).toBe(previous);
+    expect(() => parse({ REVIEW_LINK_SECRET_PREVIOUS: previous })).toThrow(
+      /REVIEW_LINK_SECRET_PREVIOUS: only used together/,
+    );
+  });
+
+  it.each([
+    "https://localhost",
+    "https://127.0.0.1:3000",
+    "https://[::1]",
+    "https://shop.localhost",
+  ])("refuses the local APP_URL %s in production", (appUrl) => {
+    expect(() => parse({ ...production, APP_URL: appUrl })).toThrow(
+      /APP_URL: must be the public domain/,
+    );
+  });
+
+  it.each([
+    "postgresql://u:p@localhost:5432/app",
+    "postgresql://u:p@127.0.0.1:54320/heavycards",
+  ])("refuses a local DATABASE_URL in production without echoing it", (url) => {
+    let message = "";
+    try {
+      parse({ ...production, DATABASE_URL: url });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toMatch(/DATABASE_URL: points at a local database/);
+    expect(message).not.toContain("u:p@");
+  });
+
+  it("allows local URLs outside Vercel production (E2E runs next start)", () => {
+    expect(
+      parse({
+        NODE_ENV: "production",
+        APP_URL: "http://localhost:3100",
+        DATABASE_URL: "postgresql://u:p@localhost:54320/heavycards",
+      }).siteUrl,
+    ).toBe("http://localhost:3100");
+  });
+
+  it("never echoes secret values in validation errors", () => {
+    const secret = "short-but-very-secret";
+    let message = "";
+    try {
+      parse({ ...production, REVIEW_LINK_SECRET: secret, AUTH_SECRET: "x" });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toMatch(/AUTH_SECRET/);
+    expect(message).not.toContain(secret);
   });
 });
