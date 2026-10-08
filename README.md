@@ -9,7 +9,9 @@ server-side logic. Market: Sweden only, Swedish UI, SEK.
 - **Database design:** [docs/database.md](docs/database.md).
 - **Design system:** [docs/design-system.md](docs/design-system.md).
 - **Routes:** [docs/routes.md](docs/routes.md).
-- **Production readiness and runbooks:** [docs/production-readiness.md](docs/production-readiness.md).
+- **Launch runbook (production setup, launch checklist, recovery):** [docs/launch-runbook.md](docs/launch-runbook.md).
+- **Production readiness and incident runbooks:** [docs/production-readiness.md](docs/production-readiness.md).
+- **Store operations for the owner (Swedish):** [docs/store-operations.md](docs/store-operations.md).
 
 ## Status
 
@@ -28,11 +30,13 @@ server-side logic. Market: Sweden only, Swedish UI, SEK.
 | 11 — Verified reviews      | Done   |
 | 12 — Admin operations      | Done   |
 | 13 — SEO                   | Done   |
-| 14 — Hardening             | Review |
-| 15 — Production deployment | —      |
+| 14 — Hardening             | Done   |
+| 15 — Production deployment | Review |
 
-Sections below marked _(later milestone)_ are placeholders and are filled in as
-those features land.
+Milestone 15 prepared everything that can be done in the repository. The
+store is **not live**: the provider accounts (Vercel, Neon, Stripe, Resend,
+domain) do not exist yet; [docs/launch-runbook.md](docs/launch-runbook.md)
+is the checklist for creating them and opening the store.
 
 ## Technology stack
 
@@ -90,8 +94,9 @@ origin trusted by the admin login's origin/CSRF checks.
 `REVIEW_LINK_SECRET` (at least 32 characters, different from `AUTH_SECRET`)
 derives review links and is required in Vercel production; locally
 `AUTH_SECRET` is used when it is unset. The full list of what production
-refuses to start without is in
-[docs/production-readiness.md](docs/production-readiness.md#secrets-and-configuration).
+refuses to start without, and which value every environment (Production,
+Preview, local, tests) needs, is in
+[docs/launch-runbook.md → Environment variables](docs/launch-runbook.md#3-environment-variables).
 
 Email settings (`EMAIL_TRANSPORT`, `RESEND_API_KEY`, `EMAIL_FROM`) are described
 under [Email](#email). Payment settings (`STRIPE_SECRET_KEY`,
@@ -111,11 +116,11 @@ values from `@/lib/env/server`, which is marked `server-only`.
 | `npm test`                   | Vitest, single run (`test:watch` for watch mode)                                                |
 | `npm run test:db`            | Vitest against the PostgreSQL test database                                                     |
 | `npm run test:e2e`           | Playwright against the production build (build first, see below)                                |
-| `npm run db:migrate`         | Create and apply a migration after editing the schema (dev only)                                |
+| `npm run db:migrate`         | Create and apply a migration after editing the schema (local database only)                     |
 | `npm run db:deploy`          | Apply pending migrations (CI, production)                                                       |
 | `npm run db:check`           | Validate the schema and verify the database matches it (drift)                                  |
 | `npm run db:seed`            | Load development seed data (refuses production/remote databases)                                |
-| `npm run db:reset`           | Drop and recreate the dev database, then seed (asks to confirm)                                 |
+| `npm run db:reset`           | Drop and recreate the local database, then seed (asks to confirm)                               |
 | `npm run db:generate`        | Regenerate the Prisma client (runs automatically on install)                                    |
 | `npm run admin:create-owner` | Create the first OWNER administrator (see [Admin access](#admin-access))                        |
 | `npm run ops`                | OWNER-authenticated operator commands (see [runbooks](docs/production-readiness.md#4-runbooks)) |
@@ -148,6 +153,10 @@ npm run test:e2e
 
 Every storefront and admin E2E test runs on a desktop and a mobile (Pixel 7)
 Chromium profile.
+
+The suite refuses to start unless `DATABASE_URL` points at a local database:
+it creates and deletes data there. It also scans the served build output for
+server secrets (`e2e/build-output.spec.ts`).
 
 The admin tests sign in as the seeded administrators, so `SEED_ADMIN_PASSWORD`
 must be set (in `.env.local`) and `npm run db:seed` must have run with it. The
@@ -260,16 +269,12 @@ the provider is chosen with `STORAGE_PROVIDER` (validated at startup):
 **Local development** needs no account or configuration: uploads land in
 `.storage/`.
 
-**Vercel (Milestone 15 checklist):**
-
-1. In the Vercel project, create a Blob store (Storage → Blob) with public
-   access and connect it to the project. Vercel then sets
-   `BLOB_READ_WRITE_TOKEN` for the selected environments.
-2. Production fails to start without `BLOB_READ_WRITE_TOKEN`. A preview
-   without it keeps working, but uploads show "Bildlagringen är inte
-   konfigurerad".
-3. To try real Blob uploads locally, set `STORAGE_PROVIDER=vercel-blob` and
-   `BLOB_READ_WRITE_TOKEN` (a development store's token) in `.env.local`.
+**Vercel:** a public Blob store connected to Production only (setup in
+[docs/launch-runbook.md → Vercel Blob](docs/launch-runbook.md#8-vercel-blob)).
+Production fails to start without `BLOB_READ_WRITE_TOKEN`; a preview without
+it keeps working, but uploads show "Bildlagringen är inte konfigurerad". To
+try real Blob uploads locally, set `STORAGE_PROVIDER=vercel-blob` and a
+development store's `BLOB_READ_WRITE_TOKEN` in `.env.local`.
 
 Uploads accept JPEG, PNG and WebP up to 4 MB (at least 300 px on the
 shortest side). The server checks the real file contents, re-encodes the
@@ -293,8 +298,11 @@ local data.
 4. Run `npm run db:check`.
 5. Commit the schema and migration together.
 
-Deployments apply migrations with `npm run db:deploy`. Never use
-`db:reset` or `migrate dev` against production.
+Deployments apply migrations with `npm run db:deploy`, run by hand with the
+database's direct URL (procedure:
+[docs/launch-runbook.md → Neon](docs/launch-runbook.md#4-neon-postgresql)).
+`migrate dev`, `migrate reset` and `db push` (and so `db:migrate` and
+`db:reset`) refuse non-local databases.
 
 **Seed.** `npm run db:seed` is idempotent and creates:
 
@@ -303,7 +311,7 @@ Deployments apply migrations with `npm run db:deploy`. Never use
   (ADMIN) and `inactive@heavycards.test` (inactive ADMIN). They have a
   password only if `SEED_ADMIN_PASSWORD` is set (local only, at least 12
   characters). There is no default password;
-- 6 categories, 7 Pokémon sets and 12 products covering: in stock, low stock,
+- 6 categories, 7 Pokémon sets and 13 products covering: in stock, low stock,
   sold out, on sale, coming soon, preorder, draft, archived and accessory;
 - 5 orders: shipped, processing, partially refunded, pending with an active
   reservation, and an expired checkout;
@@ -312,7 +320,9 @@ Deployments apply migrations with `npm run db:deploy`. Never use
 
 All people, addresses and Stripe IDs are fictional. The seed refuses to run in
 production and against non-local databases unless
-`SEED_ALLOW_REMOTE_DATABASE=true` is set (disposable staging only).
+`SEED_ALLOW_REMOTE_DATABASE` names exactly the target host (disposable
+staging only), and never touches a remote database that has a real
+(non-`.test`) administrator. Production gets no seed at all.
 
 ## Stripe Checkout and local development
 
@@ -357,17 +367,9 @@ and is not simulated by the application.
 
 **Webhooks.** `/api/stripe/webhook` verifies every event's signature with
 `STRIPE_WEBHOOK_SECRET` over the raw body and records processed event IDs, so
-redeliveries change nothing. For a deployment, create an endpoint in the
-Dashboard (Developers → Webhooks) pointing to
-`https://<domain>/api/stripe/webhook`, subscribed to exactly these events,
-and store its signing secret in `STRIPE_WEBHOOK_SECRET`:
-
-- `checkout.session.completed`
-- `checkout.session.async_payment_succeeded`
-- `checkout.session.async_payment_failed`
-- `checkout.session.expired`
-- `charge.refunded`
-- `refund.created`, `refund.updated`, `refund.failed`
+redeliveries change nothing. Deployed endpoints (URL, API version and the
+exact event list, which a unit test keeps in sync with the code) are set up
+per [docs/launch-runbook.md → Stripe](docs/launch-runbook.md#9-stripe).
 
 Refunds are made in the Stripe Dashboard. HeavyCards records only refunds
 Stripe reports as succeeded (a pending refund changes the order once it
@@ -376,10 +378,9 @@ succeeds) and never restocks automatically.
 **Reconciliation.** If a webhook is missed, stock reserved for a Stripe
 session stays reserved until Stripe's answer is known (nothing is freed just
 because time passed). `GET /api/cron/reconcile-checkouts` asks Stripe about
-overdue checkouts and applies the result; `vercel.json` schedules it daily
-(the most a Vercel Hobby plan allows), and every checkout request also
-reconciles a few overdue ones. On a Pro plan, change the schedule to every 15
-minutes. The route requires `Authorization: Bearer $CRON_SECRET`; to run it
+overdue checkouts and applies the result; `vercel.json` schedules it every
+15 minutes (Vercel Pro), and every checkout request also reconciles a few
+overdue ones. The route requires `Authorization: Bearer $CRON_SECRET`; to run it
 locally:
 
 ```bash
@@ -405,8 +406,8 @@ docs/architecture.md → Milestone 10.
 
 The shipping email contains the order's secure review link
 (`/review/<token>`, valid 180 days, one review per purchased product). The
-token is never stored; it is re-derived from `AUTH_SECRET` for every send, so
-retries carry the same link. Details: docs/architecture.md → Milestone 11.
+token is never stored; it is re-derived from `REVIEW_LINK_SECRET` (locally
+`AUTH_SECRET` when unset) for every send, so retries carry the same link. Details: docs/architecture.md → Milestone 11.
 
 Development and tests never email customers:
 
@@ -428,17 +429,9 @@ Pending and retryable order emails are sent by the scheduled run:
 curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/reconcile-checkouts
 ```
 
-Remaining Resend setup before production (Milestone 15; the full checklist is
-in docs/architecture.md → Milestone 10):
-
-1. Verify the sending domain in Resend (SPF/DKIM DNS records, plus DMARC).
-2. Create a sending-only API key for that domain and set `RESEND_API_KEY` in
-   Vercel (Production only).
-3. Set `EMAIL_FROM` to an address on the verified domain, e.g.
-   `HeavyCards <order@heavycards.se>`. Production refuses placeholder domains
-   (`example.com`, `.invalid`, `resend.dev` …).
-4. Set the store's contact email (`/admin/settings`) to the real customer-service mailbox (it is
-   the reply-to address of order emails).
+Production Resend setup (verified domain, sending-only key, `EMAIL_FROM`,
+customer-service mailbox) is in
+[docs/launch-runbook.md → Resend](docs/launch-runbook.md#10-resend).
 
 ## Admin access
 
@@ -482,12 +475,16 @@ change is written to the audit log; an order's history is shown on its page.
   production database has no settings row: checkout stays closed until the
   OWNER saves the settings form once.
 
-**First OWNER (production or a fresh database).** Run once, against the target
-database, from a trusted machine:
+**First OWNER (a fresh database).** Run once, against the target database,
+from a trusted machine. Locally (`.env.local`):
 
 ```bash
-DATABASE_URL=... npm run admin:create-owner -- --email owner@example.com --name "Förnamn Efternamn"
+npm run admin:create-owner -- --email owner@example.com --name "Förnamn Efternamn"
 ```
+
+For production, use the procedure in
+[docs/launch-runbook.md → First OWNER](docs/launch-runbook.md#first-owner-together-once),
+which keeps the database URL out of the shell history.
 
 - The password is asked for twice in a hidden prompt (minimum 12 characters,
   paste and password managers work). It is never accepted as an argument and
@@ -542,12 +539,14 @@ generated default, shown as the field's placeholder in admin):
 
 When an information page gets real, reviewed content, set
 `indexable: true` for it in `src/lib/config/info-pages.ts`. Search Console
-and launch checks: docs/architecture.md → Milestone 13 → Manual SEO work.
+and the production SEO checks:
+[docs/launch-runbook.md → SEO launch](docs/launch-runbook.md#20-seo-launch).
 
-## Deployment _(Milestone 15)_
+## Deployment
 
-Target platform: Vercel with Node.js 24.x (from `engines.node`).
-
-The manual launch checklist (environment, Vercel Firewall, logs, database
-backups, Stripe, Resend, Blob, cron, monitoring) and the operator runbooks
-are in [docs/production-readiness.md](docs/production-readiness.md).
+Vercel Pro (Node.js 24.x from `engines`, functions in `fra1`, `npm ci`,
+15-minute cron: `vercel.json`), Neon PostgreSQL, Vercel Blob, Stripe and
+Resend. Everything needed to set them up, verify them and open the store is
+in [docs/launch-runbook.md](docs/launch-runbook.md); incident runbooks are in
+[docs/production-readiness.md](docs/production-readiness.md), daily store
+operation in [docs/store-operations.md](docs/store-operations.md).

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { defineConfig, devices } from "@playwright/test";
 
 import { EMAIL_OUTBOX_DIR } from "./e2e/admin-helpers";
+import { databaseHost, isLocalDatabaseHost } from "./prisma/seed/guard";
 import {
   E2E_STORAGE_DIR,
   E2E_STRIPE_STATE_DIR,
@@ -13,6 +14,16 @@ import {
 // prisma.config.ts for local runs; CI provides DATABASE_URL directly.
 if (!process.env.DATABASE_URL && existsSync(".env.local")) {
   process.loadEnvFile(".env.local");
+}
+
+// The suite and its web server create, change and delete data in this
+// database (E2E products, orders, invited administrators). Only ever a local
+// one: a production DATABASE_URL left in a shell must not be used.
+const e2eDatabaseHost = databaseHost(process.env.DATABASE_URL ?? "");
+if (!e2eDatabaseHost || !isLocalDatabaseHost(e2eDatabaseHost)) {
+  throw new Error(
+    `Refusing to run E2E tests: DATABASE_URL must point at a local database (host: ${e2eDatabaseHost ?? "none"}).`,
+  );
 }
 
 const isCI = Boolean(process.env.CI);

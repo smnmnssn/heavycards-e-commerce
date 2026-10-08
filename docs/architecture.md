@@ -118,7 +118,9 @@ npm's `latest` tag for `prisma` points at `8.0.0-rc.19`, a release candidate.
 `prisma/seed.ts` refuses to run:
 
 - in production (`NODE_ENV`/`VERCEL_ENV`);
-- against non-local hosts, unless `SEED_ALLOW_REMOTE_DATABASE=true`.
+- against non-local hosts, unless `SEED_ALLOW_REMOTE_DATABASE=true`
+  (Milestone 15: the value must name the target host, and remote databases
+  with a real administrator are refused).
 
 It seeds no credentials; the dev admins have no password until Milestone 6.
 
@@ -1223,7 +1225,7 @@ sessions in memory, honours idempotency keys and returns
 
 ### Known limits and production setup
 
-- **Stripe account (Milestone 15):** enable Cards, Swish and Klarna under
+- **Stripe account (Milestone 15, now in launch-runbook.md):** enable Cards, Swish and Klarna under
   Settings → Payment methods (test mode first). Their eligibility depends on
   the account and is not simulated. Set the live `STRIPE_SECRET_KEY` only in
   Vercel production (a restricted key with write access to Checkout Sessions
@@ -1554,6 +1556,8 @@ email, phone or address. Tests assert this for signature failures.
 
 ### Production Stripe setup still required (Milestone 15)
 
+_Superseded by [launch-runbook.md](launch-runbook.md) (Milestone 15), which is the current procedure; kept as the record of this milestone._
+
 - Create the webhook endpoint `https://<domain>/api/stripe/webhook` in live
   mode with the eight events above; store its signing secret as
   `STRIPE_WEBHOOK_SECRET` (and a separate test-mode endpoint and secret for
@@ -1860,6 +1864,8 @@ None added. `resend` 6.31.0 (Milestone 6) already supports
 `idempotencyKey` on `emails.send`.
 
 ### Production Resend setup still required (Milestone 15)
+
+_Superseded by [launch-runbook.md](launch-runbook.md) (Milestone 15), which is the current procedure; kept as the record of this milestone._
 
 1. In Resend, add and verify the sending domain, e.g. `heavycards.se` or a
    subdomain such as `mail.heavycards.se`. Add the SPF (MX/TXT) and DKIM
@@ -2738,6 +2744,8 @@ black and black on white) and are committed as static assets.
 
 ### Manual SEO work for launch (Milestone 15)
 
+_Superseded by [launch-runbook.md](launch-runbook.md) (Milestone 15), which is the current procedure; kept as the record of this milestone._
+
 - Set `APP_URL` to the final https domain, and redirect the `*.vercel.app`
   production alias (and `www`, if it is not the canonical host) to it in
   Vercel.
@@ -3005,3 +3013,156 @@ pages.
 
 None added. `npm audit` unchanged (4 high in the Prisma CLI, accepted; see
 production-readiness.md → Dependencies).
+
+## Milestone 15 — Production deployment preparation (2026-10-03)
+
+No provider account exists yet (Vercel, Neon, Stripe, Resend, domain), so
+this milestone completes what the repository can do and documents the rest
+in [launch-runbook.md](launch-runbook.md), the single launch document, and
+[store-operations.md](store-operations.md), the owner's guide. Nothing was
+verified against a production deployment. No schema change, no new
+dependency, no customer-facing change.
+
+### Audit summary
+
+The Milestone 14 baseline was re-checked against the intended stack
+(Vercel Pro, Neon, Vercel Blob, Stripe, Resend). Launch defects found and
+fixed:
+
+| Finding                                                                                                                               | Change                                                                                |
+| ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `vercel.json` still ran the reconciliation daily (Hobby); recovery of missed webhooks and email retries assume ~15 min                | `*/15 * * * *`; a unit test pins it and checks the route exists                       |
+| No function region: Vercel's default (US) with the database in Frankfurt puts an ocean inside every locking transaction               | `regions: ["fra1"]`; Neon in AWS eu-central-1                                         |
+| Vercel installs with `npm install` by default                                                                                         | `installCommand: "npm ci"` (exact lockfile, as in CI)                                 |
+| Production accepted a `*.vercel.app` or example/test `APP_URL`, making that host every page's canonical                               | Refused in Vercel production                                                          |
+| Production accepted a `DATABASE_URL` without TLS                                                                                      | `sslmode=require/verify-ca/verify-full` required in Vercel production                 |
+| The production deployment's `*.vercel.app` alias and deployment URLs were indexable copies (only the canonical tag helped)            | `X-Robots-Tag: noindex` on every host other than `APP_URL`'s                          |
+| `SEED_ALLOW_REMOTE_DATABASE=true` left in a shell would also allow seeding production                                                 | The value must name the target host; remote databases with a real admin are refused   |
+| `npm run db:migrate`/`db:reset` (and `db push`) would run against whatever `DATABASE_URL` the shell had                               | Refused for non-local hosts (`prisma/cli-guard.ts`, loaded by `prisma.config.ts`)     |
+| The E2E suite creates and deletes data in any `DATABASE_URL`, e.g. one exported for the production owner bootstrap                    | `playwright.config.ts` refuses non-local databases                                    |
+| "No secret in the client bundle" was checked by hand only                                                                             | `e2e/build-output.spec.ts` scans `.next/static` and prerendered pages on every CI run |
+| Docs contradicted the code (daily cron, review links from `AUTH_SECRET`, seed counts) and repeated provider checklists in four places | Consolidated in launch-runbook.md; earlier lists marked superseded                    |
+
+Found sound and unchanged: environment scoping rules from Milestones 8–14,
+`APP_URL` as the only origin for canonicals, sitemap, Open Graph, Stripe
+return URLs, email, review and admin links; the cron route's authentication
+and step isolation; the storage abstraction (server-side token, validated
+pipeline, images through `/_next/image` so the CSP needs no Blob origin);
+the first-OWNER bootstrap (validation, advisory lock, refusal when an OWNER
+exists, hidden password prompt, audit entry); webhook verification.
+
+### The live Stripe key stays required for production builds
+
+Milestone 8's rule (Vercel production refuses to build without a live key)
+was kept. Consequence for the launch order: the owner activates Stripe
+before the first production deployment, and the store is kept closed until
+opening day by a Vercel Firewall rule instead. Rejected alternatives:
+
+- allowing production without a key: a forgotten key would ship a store
+  without checkout, and the protection against test keys would rest on a
+  weaker rule;
+- a "checkout open" store setting: a schema change, admin UI and tests for
+  something the Firewall already does instantly, without a deployment, and
+  without touching the webhook or cron paths.
+
+### Checkout emergency stop
+
+A Vercel Firewall custom rule denying `POST /api/checkout`
+(launch-runbook.md §14). It applies in seconds; the drawer shows the
+existing generic error (a non-JSON answer is handled as one); webhooks,
+cron, recheck and refunds keep working; open Stripe sessions can still be
+paid with their stock reserved. An environment-variable switch would need
+a redeployment; removing keys makes production refuse to start.
+
+### Migrations and connections
+
+- `prisma migrate deploy` runs by hand against production with the direct
+  URL, not in the Vercel build: previews share the staging database and
+  would apply unmerged migrations to it, the build would need DDL
+  credentials, and the explicit step gives the operator a restore point.
+  Migrations must be backward compatible with the running code (instant
+  rollback runs old code on the new schema).
+- No `DIRECT_DATABASE_URL` variable (PROJECT.md §75 lists it "if the
+  provider requires it"): Prisma 7's CLI reads one URL
+  (`prisma.config.ts`), so the operator sets `DATABASE_URL` to the direct
+  URL for that command. A second variable could silently redirect local or
+  test migrations to another database.
+- The app uses Neon's pooled URL. Every lock and setting is
+  transaction-scoped (checked: no session advisory locks, `SET` without
+  `LOCAL`, `LISTEN` or named prepared statements), so PgBouncer's
+  transaction mode is safe. node-postgres' default pool (10 per instance)
+  is kept; `@vercel/functions`' pool helper was not added (a dependency for
+  idle client connections the pooler absorbs).
+- TLS: node-postgres treats `require`, `verify-ca` and `verify-full` as
+  verify-full; the runbook recommends `verify-full` to avoid its
+  deprecation warning.
+
+### Canonical host
+
+The non-canonical-host rule is a `next.config.ts` header with a `missing`
+host condition built from `APP_URL` at build time
+(`deploymentRobotsHeaderRules`); with an unusable `APP_URL` everything is
+noindex (that build fails validation anyway). A redirect in the proxy was
+not chosen: Stripe does not follow redirects and Vercel Cron's target host
+is the platform's choice, so redirecting `*.vercel.app` in code could break
+payments; the proxy also only runs for `/admin`. Redirecting `www`/apex is
+done in Vercel's domain settings.
+
+### Production bootstrap
+
+No production seed exists or is needed. The minimum is: migrations, the
+first OWNER (`npm run admin:create-owner`, run in a subshell that reads the
+URL without echo), store settings saved once in admin (checkout answers
+"payment unavailable" until then), then catalog content. A DB test replays
+every migration into a scratch schema and asserts that no table has a row
+and that the first order number is 10001.
+
+### Monitoring
+
+No observability service was added. Launch minimum: Vercel deployment
+notifications, Stripe's webhook failure emails, an external uptime check of
+`/api/health`, and the admin overview's existing signals (Kräver åtgärd;
+"E-post i kö" overdue > 30 minutes doubles as the "cron is not running"
+signal). Error monitoring, a log drain and a cron heartbeat are optional.
+
+### Not changed
+
+- HSTS stays with Vercel (Milestone 14 decision); a live check is in the
+  runbook.
+- No automatic deletion of personal data: retention needs the owner's and
+  accountant's decision (runbook §17).
+- Information pages stay `noindex` placeholders; no legal text was written.
+- PROJECT.md §75's `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` is not used (hosted
+  Checkout) and was removed from `.env.example`.
+
+### Testing
+
+- **Unit:** production `APP_URL` refusals (`*.vercel.app`, example/test
+  domains) and preview acceptance; TLS rule for production `DATABASE_URL`
+  without echoing it; deployment header rules (noindex everywhere off
+  production, canonical-host-only on production, anchored host pattern,
+  fallback); `vercel.json` (schedule, route exists, region, install) and
+  the Node version across `package.json`, `.nvmrc` and CI; the runbook's
+  webhook event list equals `HANDLED_EVENT_TYPES`; the Prisma CLI guard;
+  the host-bound seed opt-in and the real-administrator check.
+- **DB:** migrations from zero create no rows; the seed check refuses a
+  bootstrapped database and allows a development one (including E2E
+  invitees).
+- **E2E:** the served build output contains no configured secret value and
+  no credential-shaped string.
+- **Manual:** `prisma migrate dev`, `migrate reset`, `db push` and
+  `npm run db:reset` against an unreachable remote host are refused before
+  connecting, `migrate status` is not; `npm run db:seed` with
+  `SEED_ALLOW_REMOTE_DATABASE=true` is refused; Playwright refuses a remote
+  `DATABASE_URL`.
+
+### Dependencies
+
+None added or changed. `npm audit`: 9 high, 0 critical, all in development
+tooling: the 4 known Prisma CLI findings (`mysql2`, `deepmerge-ts` via
+`@prisma/config`) and a new `braces` advisory (≤ 3.0.3) reached only through
+`eslint-config-next` → `@next/eslint-plugin-next` → `fast-glob` →
+`micromatch`, used when linting. No fixed `braces` release exists;
+`eslint-config-next` 16.3.8 and Prisma 7.10.0 are the newest stable
+releases; npm's suggested fix is a Prisma 6 downgrade. Neither package is
+traced into the server output. CI still fails on any critical advisory.

@@ -1,10 +1,12 @@
 # Production readiness and runbooks
 
-Milestone 14 baseline (2026-10-02). It separates what the application already
-enforces from what must still be set up by hand before launch (Milestone 15),
-lists accepted limitations, and gives operators step-by-step procedures. The
+Milestone 14 baseline (2026-10-02), updated in Milestone 15. It lists what
+the application enforces, accepted limitations, incident runbooks and the
+personal-data inventory. Provider setup, the ordered launch checklist and
+disaster recovery are in [launch-runbook.md](launch-runbook.md). The
 reasoning behind each decision is in
-[architecture.md → Milestone 14](architecture.md#milestone-14--security-reliability-and-production-hardening-2026-10-02).
+[architecture.md → Milestone 14](architecture.md#milestone-14--security-reliability-and-production-hardening-2026-10-02)
+and Milestone 15.
 
 ## 1. Protections implemented in the application
 
@@ -53,7 +55,7 @@ The first refusal per client and window is logged (`[security] rate limit
 reached`, scope only). Read-only public endpoints (`/api/cart`, search) are
 bounded (50 IDs, 5 terms of ≤ 100 characters, 24 rows, page ≤ 500) but not
 rate limited in the application; volumetric floods are the platform's job
-(Vercel Firewall, see section 2).
+(Vercel Firewall, launch-runbook.md → Vercel Firewall).
 
 ### Browser hardening
 
@@ -85,13 +87,18 @@ stripped; server-generated keys only.
 ### Secrets and configuration
 
 Production (`VERCEL_ENV=production`) refuses to build or start without:
-`APP_URL` (https, not a local host), `DATABASE_URL` (not a local host),
+`APP_URL` (https; not a local host, `*.vercel.app` or an example/test
+domain), `DATABASE_URL` (not a local host; TLS via `sslmode`),
 `AUTH_SECRET` (≥ 32), `REVIEW_LINK_SECRET` (≥ 32, different from
 `AUTH_SECRET`), a live Stripe key, `STRIPE_WEBHOOK_SECRET`, `CRON_SECRET`
 (≥ 16), Resend key and a non-placeholder sender, `BLOB_READ_WRITE_TOKEN`.
 Live Stripe keys are refused outside production; test runs can never use
 Resend. Error messages name variables, never values. No secret reaches a
-browser bundle (checked on the build output).
+browser bundle or prerendered page (`e2e/build-output.spec.ts` scans the
+served build output on every CI run). On production, every host other than
+`APP_URL`'s (the `*.vercel.app` alias, deployment URLs) answers with
+`X-Robots-Tag: noindex`. The seed, `migrate dev`/`migrate reset`/`db push`
+and the E2E suite refuse non-local databases.
 
 ### Logging
 
@@ -112,40 +119,12 @@ content, raw IPs or client keys. Errors are reduced to name/type/code
 (`logSafe`), because messages can echo data (e.g. PostgreSQL's "Failing row
 contains …").
 
-## 2. Manual production setup (Milestone 15)
+## 2. Production setup
 
-1. **Vercel**: production domain over HTTPS; redirect `*.vercel.app` and
-   `www` to the canonical host; Node 24. Check `curl -sI https://<domain>`
-   shows `strict-transport-security` (Vercel default); decide on
-   `includeSubDomains`/`preload` only once every subdomain serves HTTPS.
-2. **Environment variables** (production scope only, separate values for
-   preview): all of section 1 → Secrets. Generate secrets with
-   `openssl rand -base64 32`; never reuse a value between environments or
-   between `AUTH_SECRET` and `REVIEW_LINK_SECRET`.
-3. **Vercel Firewall**: enable the managed DDoS protection; add a rate-limit
-   rule for `/api/cart`, `/sok` and `/api/checkout` if abuse is seen; consider
-   Vercel BotID on `/api/checkout` if distributed hold abuse appears.
-4. **Logs**: limit who can read runtime logs (they contain URL paths, which
-   include review and reset tokens); if a log drain is added, exclude
-   `/review/` and `/admin/reset-password` and `/admin/invite` paths or keep
-   the drain inside the same trust boundary. Set retention.
-5. **PostgreSQL**: provider with PITR backups and a tested restore; a pooled
-   connection URL for the app (everything uses transaction-scoped locks and
-   settings, so transaction pooling works) and a direct URL for migrations;
-   restrict network access; run `npm run db:deploy`.
-6. **Stripe**: live webhook endpoint with the eight events in
-   architecture.md (Milestone 9); restricted key with the listed
-   permissions; payment methods enabled; team access per person.
-7. **Resend**: verified domain (SPF/DKIM/DMARC), sending-only key.
-8. **Vercel Blob**: production store connected (sets the token).
-9. **Cron**: `CRON_SECRET`; on a Pro plan run the job every 15 minutes.
-10. **Monitoring**: uptime check on `/api/health`; alerts on `[payments]`
-    and `[email]` error lines and on 5xx rates; someone owns the dashboard's
-    "Kräver åtgärd" list daily.
-11. **People**: first OWNER via `npm run admin:create-owner`; remove seed
-    administrators and demo data; each staff member has their own account.
-12. **Legal/privacy**: retention periods and the manual data-request process
-    (section 5) approved by the owner and their accountant.
+Moved to [launch-runbook.md](launch-runbook.md) (Milestone 15): environment
+variables per environment, Neon, Vercel, domain, Blob, Stripe, Resend,
+cron, Firewall, monitoring, security and SEO checks, the ordered launch
+checklist and disaster recovery.
 
 ## 3. Accepted limitations
 
@@ -231,7 +210,8 @@ due in the meantime are reconciled by the cron job.
 ### Reconciliation stuck (holds not clearing)
 
 Check that the cron job runs (`GET /api/cron/reconcile-checkouts` in the
-Vercel cron log, 200) and that `STRIPE_SECRET_KEY` works. Unresolved orders
+Vercel cron log, 200 every 15 minutes; launch-runbook.md → Cron) and that
+`STRIPE_SECRET_KEY` works. Unresolved orders
 are re-checked every 15 minutes; open the order and use **Kontrollera med
 Stripe igen** to see Stripe's answer for a single order.
 
@@ -247,8 +227,9 @@ Stripe igen** to see Stripe's answer for a single order.
 `/api/health` answers 503; checkout answers "payment unavailable"; webhooks
 answer 500 (Stripe retries); emails stay pending. Restore the database (or
 fail over), then verify `/api/health`, run the cron route once, and watch the
-dashboard. Restoring a backup older than recent payments: reconcile paid
-orders against the Stripe Dashboard before reopening the store.
+dashboard. Restoring a backup older than recent payments: follow
+launch-runbook.md → Backup and disaster recovery → Restore warning before
+reopening the store (a database restore does not roll Stripe or Resend back).
 
 ### Stripe unavailable
 
@@ -263,13 +244,15 @@ attention"; payments and fulfilment are unaffected. Afterwards follow
 
 ### Rotating secrets
 
-| Secret                  | Effect and procedure                                                                                                                                                                                                                                          |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AUTH_SECRET`           | Signs every administrator out; resets rate-limit and hold-cap counters. Review links are unaffected.                                                                                                                                                          |
-| `REVIEW_LINK_SECRET`    | Delivered links keep working (lookup by hash). Move the old value to `REVIEW_LINK_SECRET_PREVIOUS`, set the new one, redeploy; remove the previous value after a week (pending shipping emails are sent by then). Without that step they go without the link. |
-| `CRON_SECRET`           | Update in Vercel; the next cron call uses it.                                                                                                                                                                                                                 |
-| `STRIPE_WEBHOOK_SECRET` | Roll in the Stripe Dashboard (it allows both for a period), update Vercel, redeploy.                                                                                                                                                                          |
-| Stripe/Resend/Blob keys | Create the new key, update Vercel, redeploy, revoke the old key.                                                                                                                                                                                              |
+| Secret                   | Effect and procedure                                                                                                                                                                                                                                          |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AUTH_SECRET`            | Signs every administrator out; resets rate-limit and hold-cap counters. Review links are unaffected.                                                                                                                                                          |
+| `REVIEW_LINK_SECRET`     | Delivered links keep working (lookup by hash). Move the old value to `REVIEW_LINK_SECRET_PREVIOUS`, set the new one, redeploy; remove the previous value after a week (pending shipping emails are sent by then). Without that step they go without the link. |
+| `CRON_SECRET`            | Update in Vercel; the next cron call uses it.                                                                                                                                                                                                                 |
+| `STRIPE_WEBHOOK_SECRET`  | Roll in the Stripe Dashboard (it allows both for a period), update Vercel, redeploy.                                                                                                                                                                          |
+| Stripe/Resend/Blob keys  | Create the new key, update Vercel, redeploy, revoke the old key.                                                                                                                                                                                              |
+| Database password (Neon) | Reset the role's password in Neon. The old URL stops working at once: set the new pooled `DATABASE_URL` in Vercel Production and redeploy immediately (a short outage). Migrations then use the new direct URL.                                               |
+| People leaving           | Remove their member access in Vercel, Neon, Stripe, Resend, GitHub and the DNS host; rotate every secret they have seen.                                                                                                                                      |
 
 ### Suspected admin account compromise
 
@@ -290,6 +273,9 @@ price, stock and settings changes are all recorded with the actor).
 | Audit log (admin IDs; admin emails on invitations; never customer data)           | `audit_logs`                                    | Kept                                                               | Decide a retention period.                                                                                                               |
 | Resend email IDs                                                                  | `email_deliveries`                              | Kept                                                               | Resend keeps content per its plan; set its retention.                                                                                    |
 | Payment and customer data at Stripe; email logs at Resend; request logs at Vercel | Providers                                       | Provider settings                                                  | Data processing agreements; list them in the privacy policy.                                                                             |
+
+The decisions still open per row (retention periods, anonymisation, log
+access) are listed in launch-runbook.md → Personal data and retention.
 
 Data requests (access, rectification, erasure) are handled manually in V1:
 find the customer's orders by email in admin; rectification and erasure of
@@ -341,3 +327,10 @@ No fixed Prisma 7 release exists (7.10.0 is the newest stable; npm's
 suggested "fix" is a major downgrade to 6.x). Accepted; CI fails on any
 critical advisory. Next.js 16.3.8, Stripe 23.0.0, Better Auth 1.7.7, sharp
 0.35.5 and @vercel/blob 2.8.0 are the latest releases; no upgrade was needed.
+
+Milestone 15 (2026-10-03): 9 high, 0 critical. The 4 above, plus a
+`braces` advisory (≤ 3.0.3, deeply nested patterns) counted along its chain
+`eslint-config-next` → `@next/eslint-plugin-next` → `fast-glob` →
+`micromatch` → `braces`: lint-time only, never deployed, and it only parses
+the project's own glob patterns. No fixed `braces` release exists and
+`eslint-config-next` 16.3.8 is the newest. Accepted; re-check on upgrades.

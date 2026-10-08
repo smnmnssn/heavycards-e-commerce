@@ -566,11 +566,21 @@ call against this rule.
 ## Operational notes
 
 - Local development uses PostgreSQL 18.6 from `compose.yaml` (port 54320).
-  The production provider is not chosen yet (Milestone 15). It must support
-  PostgreSQL ≥ 16, backups and point-in-time recovery.
+  Production uses Neon PostgreSQL (≥ 16) in AWS eu-central-1 with
+  point-in-time restore (Milestone 15; setup, migrations and recovery in
+  [launch-runbook.md](launch-runbook.md#4-neon-postgresql)).
 - The Prisma client uses the `@prisma/adapter-pg` driver adapter (Prisma 7)
-  with a 5 s connection timeout. Pool sizing for serverless is reviewed with
-  the production provider.
+  with a 5 s connection timeout and node-postgres' default pool (10
+  connections per server instance). In production it connects through
+  Neon's pooler (PgBouncer, transaction mode), which works because every
+  lock and setting is transaction-scoped (`FOR UPDATE`,
+  `pg_advisory_xact_lock`, `SET LOCAL`); Vercel production requires TLS
+  (`sslmode`). Migrations use the direct (non-pooled) connection, because
+  Prisma Migrate takes a session-level advisory lock.
+- A database created by the migrations contains no rows: no settings,
+  administrators or demo data (`tests/db/production-bootstrap.test.ts`).
+  `migrate dev`, `migrate reset` and `db push` refuse non-local hosts
+  (`prisma/cli-guard.ts`, loaded by `prisma.config.ts`).
 - Workflow for schema changes (never edit production by hand):
   1. edit `schema.prisma`;
   2. `npm run db:migrate -- --name <change>`;

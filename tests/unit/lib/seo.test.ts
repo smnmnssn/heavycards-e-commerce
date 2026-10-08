@@ -19,6 +19,7 @@ import {
   setSeoTitle,
 } from "@/lib/seo/catalog-defaults";
 import {
+  deploymentRobotsHeaderRules,
   isIndexableDeployment,
   PRODUCTION_DISALLOW,
   robotsFor,
@@ -283,6 +284,60 @@ describe("deployment indexing and robots.txt", () => {
         siteUrl: "https://heavycards-git-x.vercel.app",
       }),
     ).toEqual({ rules: { userAgent: "*", disallow: "/" } });
+  });
+
+  it("marks every response noindex outside Vercel production", () => {
+    for (const vercelEnv of [undefined, "preview", "development"]) {
+      expect(
+        deploymentRobotsHeaderRules({
+          vercelEnv,
+          appUrl: "https://heavycards.se",
+        }),
+      ).toEqual([
+        {
+          source: "/:path*",
+          headers: [{ key: "X-Robots-Tag", value: "noindex, nofollow" }],
+        },
+      ]);
+    }
+  });
+
+  it("lets only the canonical host be indexed on production", () => {
+    const rules = deploymentRobotsHeaderRules({
+      vercelEnv: "production",
+      appUrl: "https://www.heavycards.se",
+    });
+    expect(rules).toHaveLength(1);
+    const missing = rules[0]!.missing ?? [];
+    expect(missing).toEqual([
+      { type: "host", value: String.raw`www\.heavycards\.se` },
+    ]);
+    // How Next.js and Vercel evaluate `missing` host conditions: anchored.
+    const isCanonical = (host: string) =>
+      new RegExp(`^${missing[0]!.value}$`).test(host);
+    expect(isCanonical("www.heavycards.se")).toBe(true);
+    for (const host of [
+      "heavycards.vercel.app",
+      "heavycards-abc123-team.vercel.app",
+      "heavycards.se",
+      "wwwxheavycards.se",
+      "www.heavycards.se.attacker.example",
+    ]) {
+      expect(isCanonical(host)).toBe(false);
+    }
+  });
+
+  it("falls back to noindex everywhere without a usable APP_URL", () => {
+    for (const appUrl of [undefined, "", "not a url"]) {
+      expect(
+        deploymentRobotsHeaderRules({ vercelEnv: "production", appUrl }),
+      ).toEqual([
+        {
+          source: "/:path*",
+          headers: [{ key: "X-Robots-Tag", value: "noindex, nofollow" }],
+        },
+      ]);
+    }
   });
 });
 

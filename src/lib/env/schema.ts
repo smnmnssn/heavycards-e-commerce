@@ -148,14 +148,33 @@ export function parseSender(value: string): { domain: string } | null {
   return { domain: address.slice(address.lastIndexOf("@") + 1).toLowerCase() };
 }
 
+/** Reserved example/test domains (RFC 2606, RFC 6761) and local names. */
+const isReservedDomain = (domain: string) =>
+  /(^|\.)example\.(com|net|org)$/.test(domain) ||
+  /(^|\.)(invalid|test|example|localhost|local)$/.test(domain);
+
 /**
  * Domains that can never be HeavyCards' verified production sender:
  * reserved test/example domains and Resend's shared testing domain.
  */
 const isPlaceholderSenderDomain = (domain: string) =>
-  domain === "resend.dev" ||
-  /(^|\.)example\.(com|net|org)$/.test(domain) ||
-  /\.(invalid|test|example|localhost|local)$/.test(domain);
+  domain === "resend.dev" || isReservedDomain(domain);
+
+/**
+ * Hosts that can never be the production store's canonical origin: reserved
+ * names, and Vercel's own deployment domains, which would make a
+ * `*.vercel.app` address the canonical URL of every page (Milestone 15).
+ */
+const isNonPublicSiteHost = (hostname: string) =>
+  isReservedDomain(hostname) ||
+  hostname === "vercel.app" ||
+  hostname.endsWith(".vercel.app");
+
+/**
+ * `sslmode` values that encrypt the connection. node-postgres treats all of
+ * them as verify-full (certificate and host name are checked).
+ */
+const ENCRYPTED_SSL_MODES = new Set(["require", "verify-ca", "verify-full"]);
 
 /**
  * Secrets for review links (src/server/domain/review-token.ts). Production
@@ -220,7 +239,10 @@ function resolveSiteUrl(
         "APP_URL: must be an origin without path, query or fragment",
       );
     }
-    if (env.VERCEL_ENV === "production" && isLoopbackHost(url.hostname)) {
+    if (
+      env.VERCEL_ENV === "production" &&
+      (isLoopbackHost(url.hostname) || isNonPublicSiteHost(url.hostname))
+    ) {
       return new Error(
         "APP_URL: must be the public domain in the Vercel production environment",
       );
@@ -250,12 +272,18 @@ const isLoopbackHost = (hostname: string) =>
 function resolveDatabase(
   env: z.infer<typeof rawServerEnvSchema>,
 ): string | Error {
-  if (
-    env.VERCEL_ENV === "production" &&
-    isLoopbackHost(new URL(env.DATABASE_URL).hostname)
-  ) {
+  if (env.VERCEL_ENV !== "production") return env.DATABASE_URL;
+  const url = new URL(env.DATABASE_URL);
+  if (isLoopbackHost(url.hostname)) {
     return new Error(
       "DATABASE_URL: points at a local database in the Vercel production environment",
+    );
+  }
+  // Customer data must never cross the internet unencrypted. Neon enforces
+  // TLS as well; this makes a wrong URL fail the build instead.
+  if (!ENCRYPTED_SSL_MODES.has(url.searchParams.get("sslmode") ?? "")) {
+    return new Error(
+      "DATABASE_URL: must require TLS (sslmode=verify-full) in the Vercel production environment",
     );
   }
   return env.DATABASE_URL;

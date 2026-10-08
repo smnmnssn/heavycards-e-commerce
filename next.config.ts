@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 import { contentSecurityPolicy } from "./src/lib/security/content-security-policy";
-import { isIndexableDeployment } from "./src/lib/seo/indexing";
+import { deploymentRobotsHeaderRules } from "./src/lib/seo/indexing";
 
 /**
  * Security headers applied to every response (Milestone 14 review). HSTS is
@@ -56,10 +56,12 @@ const reviewHeaders = adminHeaders;
 
 // Every deployment except Vercel production (previews, local and CI builds)
 // is kept out of search indexes as a whole; robots.txt also disallows
-// crawling there (src/lib/seo/indexing.ts).
-const deploymentHeaders = isIndexableDeployment(process.env.VERCEL_ENV)
-  ? []
-  : [{ source: "/:path*", headers: noIndexHeaders }];
+// crawling there. On production, only the canonical APP_URL host may be
+// indexed (src/lib/seo/indexing.ts).
+const deploymentHeaders = deploymentRobotsHeaderRules({
+  vercelEnv: process.env.VERCEL_ENV,
+  appUrl: process.env.APP_URL,
+});
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,

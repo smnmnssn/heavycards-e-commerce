@@ -1,9 +1,11 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "npm ci",
+  "regions": ["fra1"],
   "crons": [
     {
       "path": "/api/cron/reconcile-checkouts",
-      "schedule": "0 3 * * *"
+      "schedule": "*/15 * * * *"
     }
   ]
 }

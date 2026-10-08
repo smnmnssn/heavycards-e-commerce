@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { EnvValidationError, parseServerEnv } from "@/lib/env/schema";
 
 const DATABASE_URL =
-  "postgresql://user:secret-password@db.heavycards.test:5432/app";
+  "postgresql://user:secret-password@db.heavycards.test:5432/app?sslmode=verify-full";
 // Test-only value; any 32+ character string is valid.
 const AUTH_SECRET = "unit-test-auth-secret-0123456789abcdef";
 const REVIEW_LINK_SECRET = "unit-test-review-link-secret-0123456789";
@@ -527,7 +527,8 @@ describe("parseServerEnv: production hardening (Milestone 14)", () => {
     NODE_ENV: "production",
     VERCEL_ENV: "production",
     APP_URL: "https://heavycards.se",
-    DATABASE_URL: "postgresql://user:secret-password@db.example.net:5432/app",
+    DATABASE_URL:
+      "postgresql://user:secret-password@db.example.net:5432/app?sslmode=verify-full",
     EMAIL_TRANSPORT: "resend",
     RESEND_API_KEY: "re_live_key_123",
     EMAIL_FROM: "HeavyCards <order@heavycards.se>",
@@ -622,5 +623,77 @@ describe("parseServerEnv: production hardening (Milestone 14)", () => {
     }
     expect(message).toMatch(/AUTH_SECRET/);
     expect(message).not.toContain(secret);
+  });
+});
+
+describe("parseServerEnv: production launch rules (Milestone 15)", () => {
+  const production = {
+    NODE_ENV: "production",
+    VERCEL_ENV: "production",
+    APP_URL: "https://heavycards.se",
+    EMAIL_TRANSPORT: "resend",
+    RESEND_API_KEY: "re_live_key_123",
+    EMAIL_FROM: "HeavyCards <order@heavycards.se>",
+    BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_test",
+    STRIPE_SECRET_KEY: "sk_live_unittest",
+    STRIPE_WEBHOOK_SECRET: "whsec_unittest",
+    CRON_SECRET: "cron-secret-unittest-0123",
+    REVIEW_LINK_SECRET,
+  };
+  const pooled =
+    "postgresql://owner:npg-secret@ep-quiet-1234-pooler.eu-central-1.aws.neon.tech/heavycards";
+
+  it.each([
+    "https://heavycards.vercel.app",
+    "https://heavycards-git-main-team.vercel.app",
+    "https://example.com",
+    "https://shop.example.org",
+    "https://heavycards.test",
+    "https://heavycards.invalid",
+  ])("refuses the non-public canonical origin %s in production", (appUrl) => {
+    expect(() =>
+      parse({
+        ...production,
+        APP_URL: appUrl,
+        DATABASE_URL: `${pooled}?sslmode=verify-full`,
+      }),
+    ).toThrow(/APP_URL: must be the public domain/);
+  });
+
+  it("accepts a *.vercel.app APP_URL on previews", () => {
+    expect(
+      parse({
+        VERCEL_ENV: "preview",
+        APP_URL: "https://heavycards-git-staging-team.vercel.app",
+      }).siteUrl,
+    ).toBe("https://heavycards-git-staging-team.vercel.app");
+  });
+
+  it.each(["require", "verify-ca", "verify-full"])(
+    "accepts a pooled Neon URL with sslmode=%s in production",
+    (mode) => {
+      const url = `${pooled}?sslmode=${mode}&channel_binding=require`;
+      expect(parse({ ...production, DATABASE_URL: url }).databaseUrl).toBe(url);
+    },
+  );
+
+  it.each([pooled, `${pooled}?sslmode=disable`, `${pooled}?sslmode=prefer`])(
+    "refuses a production DATABASE_URL without enforced TLS, without echoing it",
+    (url) => {
+      let message = "";
+      try {
+        parse({ ...production, DATABASE_URL: url });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toMatch(/DATABASE_URL: must require TLS/);
+      expect(message).not.toContain("npg-secret");
+    },
+  );
+
+  it("does not require TLS for local and preview databases", () => {
+    expect(() =>
+      parse({ VERCEL_ENV: "preview", DATABASE_URL: pooled }),
+    ).not.toThrow();
   });
 });

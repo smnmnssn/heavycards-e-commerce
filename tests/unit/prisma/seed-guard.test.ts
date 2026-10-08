@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { SeedGuardError, assertSeedAllowed } from "../../../prisma/seed/guard";
+import {
+  SeedGuardError,
+  assertNoRealAdministrators,
+  assertSeedAllowed,
+} from "../../../prisma/seed/guard";
 
 const local = "postgresql://heavycards:heavycards@localhost:54320/heavycards";
 const remote =
@@ -21,13 +25,32 @@ describe("assertSeedAllowed", () => {
     );
   });
 
-  it("allows remote databases with explicit opt-in (staging)", () => {
-    expect(() =>
+  it("allows a remote database only when the opt-in names its host (staging)", () => {
+    expect(
       assertSeedAllowed({
         DATABASE_URL: remote,
-        SEED_ALLOW_REMOTE_DATABASE: "true",
+        SEED_ALLOW_REMOTE_DATABASE: "db.provider.example",
       }),
-    ).not.toThrow();
+    ).toEqual({ hostname: "db.provider.example", local: false });
+  });
+
+  it.each(["true", "1", "other-staging.provider.example"])(
+    "refuses a remote database whose host the opt-in %j does not name",
+    (optIn) => {
+      expect(() =>
+        assertSeedAllowed({
+          DATABASE_URL: remote,
+          SEED_ALLOW_REMOTE_DATABASE: optIn,
+        }),
+      ).toThrow(/set SEED_ALLOW_REMOTE_DATABASE to exactly this host name/);
+    },
+  );
+
+  it("reports local targets", () => {
+    expect(assertSeedAllowed({ DATABASE_URL: local })).toEqual({
+      hostname: "localhost",
+      local: true,
+    });
   });
 
   it.each([{ NODE_ENV: "production" }, { VERCEL_ENV: "production" }])(
@@ -55,6 +78,26 @@ describe("assertSeedAllowed", () => {
       expect.objectContaining({
         message: expect.not.stringContaining("secret-pw"),
       }),
+    );
+  });
+});
+
+describe("assertNoRealAdministrators", () => {
+  const dbWith = (count: number) => ({
+    adminUser: { count: vi.fn(async () => count) },
+  });
+
+  it("passes when every administrator uses a .test address", async () => {
+    const db = dbWith(0);
+    await expect(assertNoRealAdministrators(db)).resolves.toBeUndefined();
+    expect(db.adminUser.count).toHaveBeenCalledWith({
+      where: { NOT: { email: { endsWith: ".test" } } },
+    });
+  });
+
+  it("refuses a database with a real administrator", async () => {
+    await expect(assertNoRealAdministrators(dbWith(1))).rejects.toThrow(
+      /real administrators/,
     );
   });
 });
